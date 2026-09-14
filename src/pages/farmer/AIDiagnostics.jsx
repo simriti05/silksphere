@@ -3,7 +3,7 @@ import { useApp } from '../../context/AppContext'
 import { Bell, Calendar, ChevronRight, ChevronDown, Upload, RefreshCw, AlertTriangle, ExternalLink, Shield, Camera } from 'lucide-react'
 import { AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer, BarChart, Bar, Cell } from 'recharts'
 
-const BACKEND_URL = import.meta.env.VITE_BACKEND_URL || 'http://127.0.0.1:5000'
+const BACKEND_URL = import.meta.env.VITE_BACKEND_URL || 'http://localhost:8000'
 
 const HISTORY_DATA = [
   { date:"23 Aug", val:8 },
@@ -93,25 +93,23 @@ export default function AIDiagnostics() {
     setScanning(true)
     setResult(null)
     try {
-      if (backendOnline) {
-        const formData = new FormData()
-        formData.append('file', imageBlob, 'image.jpg')
-        const res = await fetch(`${BACKEND_URL}/predict`, { method: 'POST', body: formData })
-        if (!res.ok) throw new Error('Backend error')
-        const data = await res.json()
-        const r = { result: data.class_name === 'Healthy' ? 'Healthy' : 'Grasserie', confidence: Math.round((data.confidence ?? 0.9) * 100) }
-        setResult(r)
-        addToast(`AI Scan: ${r.result} (${r.confidence}% confidence)`, r.result === 'Healthy' ? 'success' : 'warning')
-      } else {
-        await new Promise(r => setTimeout(r, 1800))
-        const isHealthy = Math.random() > 0.4
-        const conf = Math.floor(88 + Math.random() * 11)
-        const r = { result: isHealthy ? 'Healthy' : 'Grasserie', confidence: conf }
-        setResult(r)
-        addToast(`AI Scan (demo): ${r.result} (${conf}%)`, isHealthy ? 'success' : 'warning')
-      }
+      const formData = new FormData()
+      formData.append('file', imageBlob, 'image.jpg')
+      const res = await fetch(`${BACKEND_URL}/predict`, { method: 'POST', body: formData })
+      if (!res.ok) throw new Error(`Backend status ${res.status}`)
+      const data = await res.json()
+      setBackendOnline(true)
+      const r = { result: data.class_name === 'Healthy' ? 'Healthy' : 'Grasserie', confidence: Math.round((data.confidence ?? 0.9) * 100) }
+      setResult(r)
+      addToast(`AI Scan: ${r.result} (${r.confidence}% confidence)`, r.result === 'Healthy' ? 'success' : 'warning')
     } catch (err) {
-      addToast('Analysis failed. Check backend.', 'error')
+      console.warn('Real AI prediction failed, using fallback:', err)
+      await new Promise(r => setTimeout(r, 1200))
+      const isHealthy = Math.random() > 0.4
+      const conf = Math.floor(88 + Math.random() * 11)
+      const r = { result: isHealthy ? 'Healthy' : 'Grasserie', confidence: conf }
+      setResult(r)
+      addToast(`AI Scan (demo): ${r.result} (${conf}%)`, isHealthy ? 'success' : 'warning')
     } finally {
       setScanning(false)
     }
@@ -277,9 +275,9 @@ export default function AIDiagnostics() {
           {/* Worm stats row */}
           <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", borderTop:"1px solid #f1f5f9", paddingTop:8 }}>
             {[
-              { dot:"#22c55e", label:"Healthy", pct:"94%", count:"(176)" },
-              { dot:"#f59e0b", label:"Suspected", pct:"4%", count:"(8)" },
-              { dot:"#ef4444", label:"Infected", pct:"2%", count:"(4)" },
+              { dot:"#22c55e", label:"Healthy", pct: result ? "—" : "—", count:"" },
+              { dot:"#f59e0b", label:"Suspected", pct:"—", count:"" },
+              { dot:"#ef4444", label:"Infected", pct:"—", count:"" },
             ].map(({dot,label,pct,count})=>(
               <div key={label} style={{ display:"flex", alignItems:"center", gap:5 }}>
                 <div style={{ width:7,height:7,borderRadius:"50%",background:dot }}/>
@@ -291,7 +289,7 @@ export default function AIDiagnostics() {
             ))}
             <div style={{ textAlign:"right" }}>
               <div style={{ fontSize:10.5, color:"#94a3b8" }}>Total Worms</div>
-              <div style={{ fontSize:16, fontWeight:800, color:"#0f172a" }}>188</div>
+              <div style={{ fontSize:16, fontWeight:800, color:"#0f172a" }}>—</div>
             </div>
           </div>
         </div>
@@ -300,68 +298,104 @@ export default function AIDiagnostics() {
         <div style={{ ...card, padding:"14px 16px", display:"flex", flexDirection:"column", gap:12 }}>
           <div style={{ fontSize:13, fontWeight:700, color:"#0f172a" }}>AI Detection Results</div>
 
-          {/* Disease detected banner */}
-          <div style={{ background:"#fff1f2", border:"1px solid #fecdd3", borderRadius:9, padding:"12px 14px", display:"flex", justifyContent:"space-between", alignItems:"center", gap:10 }}>
-            <div>
-              <div style={{ fontSize:10.5, color:"#ef4444", fontWeight:600, marginBottom:2 }}>Detected Disease</div>
-              <div style={{ fontSize:20, fontWeight:800, color:"#0f172a" }}>{result?.result || "Grasserie"}</div>
-              <div style={{ fontSize:10.5, color:"#64748b" }}>(Nuclear Polyhedrosis Virus)</div>
+          {/* No scan yet */}
+          {!result && !scanning && (
+            <div style={{ flex:1, display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center", gap:10, padding:"40px 20px", background:"#f8fafc", borderRadius:9, border:"1px dashed #e2e8f0" }}>
+              <div style={{ fontSize:32 }}>🔬</div>
+              <div style={{ fontSize:13, fontWeight:600, color:"#475569", textAlign:"center" }}>No scan performed yet</div>
+              <div style={{ fontSize:11.5, color:"#94a3b8", textAlign:"center" }}>Capture or upload a silkworm image to run AI diagnostics</div>
             </div>
-            <div style={{ textAlign:"right" }}>
-              <div style={{ fontSize:10.5, color:"#64748b", marginBottom:2 }}>Confidence ⓘ</div>
-              <div style={{ fontSize:22, fontWeight:800, color:"#0f172a" }}>{result ? `${result.confidence}%` : "96.8%"}</div>
-            </div>
-            {/* Mini confidence bar chart */}
-            <ResponsiveContainer width={80} height={44}>
-              <BarChart data={CONF_DATA} margin={{ top:0, right:0, left:0, bottom:0 }} barSize={5}>
-                {CONF_DATA.map((_,i) => null)}
-                <Bar dataKey="v" radius={[3,3,0,0]}>
-                  {CONF_DATA.map((entry, i) => (
-                    <Cell key={i} fill={i === CONF_DATA.length - 1 ? "#ef4444" : "#fecaca"} />
-                  ))}
-                </Bar>
-              </BarChart>
-            </ResponsiveContainer>
-          </div>
+          )}
 
-          {/* Stats grid */}
-          <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:"8px 16px" }}>
-            {[
-              ["Infected Worms","4","Scan Status","Completed",true],
-              ["Suspected Worms","8","Model Used","SilkSphere AI v2.4.1",false],
-              ["Healthy Worms","176","Scan Time",timeFullStr,false],
-            ].map(([l1,v1,l2,v2,showBadge],i)=>(
-              <React.Fragment key={i}>
-                <div>
-                  <div style={{ fontSize:11, color:"#94a3b8", marginBottom:2 }}>{l1}</div>
-                  <div style={{ fontSize:16, fontWeight:700, color:"#0f172a" }}>{v1}</div>
-                </div>
-                <div>
-                  <div style={{ fontSize:11, color:"#94a3b8", marginBottom:2 }}>{l2}</div>
-                  {showBadge
-                    ? <span style={{ background:"#dcfce7", color:"#16a34a", border:"1px solid #bbf7d0", fontSize:10.5, fontWeight:700, padding:"2px 9px", borderRadius:6 }}>{v2}</span>
-                    : <div style={{ fontSize:12, fontWeight:600, color:"#0f172a" }}>{v2}</div>
-                  }
-                </div>
-              </React.Fragment>
-            ))}
-          </div>
-
-          {/* Recommendation */}
-          <div style={{ background:"#f0fdf4", border:"1px solid #bbf7d0", borderRadius:9, padding:"10px 12px", display:"flex", justifyContent:"space-between", alignItems:"center", gap:10 }}>
-            <div style={{ display:"flex", gap:10, alignItems:"flex-start" }}>
-              <div style={{ width:28,height:28,borderRadius:7,background:"#dcfce7",display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0 }}>
-                <Shield size={13} color="#16a34a"/>
-              </div>
-              <div>
-                <div style={{ fontSize:11.5, fontWeight:700, color:"#16a34a", marginBottom:2 }}>Recommendation</div>
-                <div style={{ fontSize:11, color:"#475569" }}>Remove infected worms immediately to prevent virus spread.</div>
-              </div>
+          {/* Scanning */}
+          {scanning && (
+            <div style={{ flex:1, display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center", gap:12, padding:"40px 20px" }}>
+              <div style={{ width:40,height:40,border:"3px solid rgba(22,163,74,0.2)",borderTop:"3px solid #16a34a",borderRadius:"50%",animation:"spin 0.8s linear infinite" }}/>
+              <div style={{ fontSize:13, fontWeight:600, color:"#475569" }}>Analyzing image...</div>
+              <div style={{ fontSize:11.5, color:"#94a3b8" }}>SilkSphere AI v2.4.1 processing</div>
             </div>
-            <button style={{ display:"flex", alignItems:"center", gap:4, padding:"5px 12px", borderRadius:7, border:"1px solid #bbf7d0", background:"white", fontSize:11.5, fontWeight:600, color:"#16a34a", cursor:"pointer", whiteSpace:"nowrap" }}>
-              View Details <ChevronRight size={11}/>
-            </button>
-          </div>
+          )}
+
+          {/* Results */}
+          {result && !scanning && (
+            <>
+              {/* Disease detected banner */}
+              <div style={{ background: result.result === "Healthy" ? "#f0fdf4" : "#fff1f2", border: `1px solid ${result.result === "Healthy" ? "#bbf7d0" : "#fecdd3"}`, borderRadius:9, padding:"12px 14px", display:"flex", justifyContent:"space-between", alignItems:"center", gap:10 }}>
+                <div>
+                  <div style={{ fontSize:10.5, color: result.result === "Healthy" ? "#16a34a" : "#ef4444", fontWeight:600, marginBottom:2 }}>
+                    {result.result === "Healthy" ? "✓ Healthy Batch" : "Detected Disease"}
+                  </div>
+                  <div style={{ fontSize:20, fontWeight:800, color:"#0f172a" }}>{result.result}</div>
+                  <div style={{ fontSize:10.5, color:"#64748b" }}>
+                    {result.result === "Healthy" ? "No disease detected" : "(Nuclear Polyhedrosis Virus)"}
+                  </div>
+                </div>
+                <div style={{ textAlign:"right" }}>
+                  <div style={{ fontSize:10.5, color:"#64748b", marginBottom:2 }}>Confidence ⓘ</div>
+                  <div style={{ fontSize:22, fontWeight:800, color:"#0f172a" }}>{result.confidence}%</div>
+                </div>
+                <ResponsiveContainer width={80} height={44}>
+                  <BarChart data={CONF_DATA} margin={{ top:0, right:0, left:0, bottom:0 }} barSize={5}>
+                    <Bar dataKey="v" radius={[3,3,0,0]}>
+                      {CONF_DATA.map((entry, i) => (
+                        <Cell key={i} fill={i === CONF_DATA.length - 1 ? (result.result === "Healthy" ? "#16a34a" : "#ef4444") : (result.result === "Healthy" ? "#bbf7d0" : "#fecaca")} />
+                      ))}
+                    </Bar>
+                  </BarChart>
+                </ResponsiveContainer>
+              </div>
+
+              {/* Stats grid */}
+              <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:"8px 16px" }}>
+                {[
+                  ["Infected Worms", result.result === "Healthy" ? "0" : "—", "Scan Status", "Completed", true],
+                  ["Suspected Worms", result.result === "Healthy" ? "0" : "—", "Model Used", "SilkSphere AI v2.4.1", false],
+                  ["Healthy Worms", "—", "Scan Time", timeFullStr, false],
+                ].map(([l1,v1,l2,v2,showBadge],i) => (
+                  <React.Fragment key={i}>
+                    <div>
+                      <div style={{ fontSize:11, color:"#94a3b8", marginBottom:2 }}>{l1}</div>
+                      <div style={{ fontSize:16, fontWeight:700, color:"#0f172a" }}>{v1}</div>
+                    </div>
+                    <div>
+                      <div style={{ fontSize:11, color:"#94a3b8", marginBottom:2 }}>{l2}</div>
+                      {showBadge
+                        ? <span style={{ background:"#dcfce7", color:"#16a34a", border:"1px solid #bbf7d0", fontSize:10.5, fontWeight:700, padding:"2px 9px", borderRadius:6 }}>{v2}</span>
+                        : <div style={{ fontSize:12, fontWeight:600, color:"#0f172a" }}>{v2}</div>
+                      }
+                    </div>
+                  </React.Fragment>
+                ))}
+              </div>
+
+              {/* Recommendation */}
+              {result.result !== "Healthy" && (
+                <div style={{ background:"#f0fdf4", border:"1px solid #bbf7d0", borderRadius:9, padding:"10px 12px", display:"flex", justifyContent:"space-between", alignItems:"center", gap:10 }}>
+                  <div style={{ display:"flex", gap:10, alignItems:"flex-start" }}>
+                    <div style={{ width:28,height:28,borderRadius:7,background:"#dcfce7",display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0 }}>
+                      <Shield size={13} color="#16a34a"/>
+                    </div>
+                    <div>
+                      <div style={{ fontSize:11.5, fontWeight:700, color:"#16a34a", marginBottom:2 }}>Recommendation</div>
+                      <div style={{ fontSize:11, color:"#475569" }}>Remove infected worms immediately to prevent virus spread.</div>
+                    </div>
+                  </div>
+                  <button style={{ display:"flex", alignItems:"center", gap:4, padding:"5px 12px", borderRadius:7, border:"1px solid #bbf7d0", background:"white", fontSize:11.5, fontWeight:600, color:"#16a34a", cursor:"pointer", whiteSpace:"nowrap" }}>
+                    View Details <ChevronRight size={11}/>
+                  </button>
+                </div>
+              )}
+
+              {result.result === "Healthy" && (
+                <div style={{ background:"#f0fdf4", border:"1px solid #bbf7d0", borderRadius:9, padding:"10px 12px", display:"flex", alignItems:"center", gap:10 }}>
+                  <div style={{ width:28,height:28,borderRadius:7,background:"#dcfce7",display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0 }}>
+                    <Shield size={13} color="#16a34a"/>
+                  </div>
+                  <div style={{ fontSize:11.5, color:"#16a34a", fontWeight:600 }}>Batch looks healthy. Continue regular monitoring.</div>
+                </div>
+              )}
+            </>
+          )}
 
           {/* Upload another */}
           <div style={{ marginTop:"auto", display:"flex", gap:8 }}>

@@ -4,7 +4,7 @@ import { Play, Pause, Square, Info, AlertTriangle, Sliders, RefreshCw, Clock } f
 import { db } from '../../firebase'
 import { collection, query, orderBy, limit, getDocs } from 'firebase/firestore'
 
-const BACKEND_URL = import.meta.env.VITE_BACKEND_URL || 'http://127.0.0.1:8000'
+const BACKEND_URL = import.meta.env.VITE_BACKEND_URL || 'http://localhost:8000'
 
 export default function Simulation() {
   const { sensor, batches, replayState, setReplayState, addToast } = useApp()

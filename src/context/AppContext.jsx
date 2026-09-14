@@ -3,7 +3,7 @@ import { db } from '../firebase'
 import { doc, setDoc, addDoc, collection, serverTimestamp, query, orderBy, limit, onSnapshot, getDocs } from 'firebase/firestore'
 
 const APP_VERSION = '1.0.0'
-const BACKEND_URL = import.meta.env.VITE_BACKEND_URL || 'http://127.0.0.1:8000'
+const BACKEND_URL = import.meta.env.VITE_BACKEND_URL || 'http://localhost:8000'
 
 const DEMO_USERS = [
   { id: 'demo-farmer', name: 'Demo Farmer', email: 'farmer@silk.com', password: 'demo123', role: 'farmer', phone: '9876543210', state: 'Karnataka', farmName: 'Green Silk Farm' },

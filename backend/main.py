@@ -7,6 +7,10 @@ from pydantic import BaseModel
 import keras
 import keras.layers
 import tensorflow as tf
+try:
+    import tf_keras as tf_keras_compat
+except ImportError:
+    tf_keras_compat = None
 from PIL import Image
 import numpy as np
 import firebase_admin
@@ -65,8 +69,22 @@ MODEL_PATH = os.path.join(os.path.dirname(__file__), "silkworm_disease_model.ker
 model = None
 if os.path.exists(MODEL_PATH):
     print("Loading AI model...")
-    model = keras.models.load_model(MODEL_PATH, compile=False)
-    print("Model loaded successfully.")
+    try:
+        # Try tf_keras first (compatibility layer for Keras 2.x models)
+        if tf_keras_compat:
+            model = tf_keras_compat.models.load_model(MODEL_PATH, compile=False)
+            print("Model loaded via tf_keras (compatibility mode).")
+        else:
+            model = keras.models.load_model(MODEL_PATH, compile=False)
+            print("Model loaded via keras.")
+    except Exception as e:
+        print(f"Keras load failed ({e}), trying TF SavedModel format...")
+        try:
+            model = tf.keras.models.load_model(MODEL_PATH, compile=False)
+            print("Model loaded via tf.keras.")
+        except Exception as e2:
+            print(f"All load attempts failed: {e2}")
+            model = None
 else:
     print(f"Warning: Model not found at {MODEL_PATH}")
 
@@ -446,7 +464,7 @@ def debug_predict():
         arr = tf.keras.applications.mobilenet_v2.preprocess_input(arr_raw)
         arr = np.expand_dims(arr, axis=0)
         raw = float(model.predict(arr, verbose=0)[0][0])
-        results[name] = {"raw": round(raw, 6), "label": "Grasserie" if raw > 0.5 else "Healthy"}
+        results[name] = {"raw": round(raw, 6), "label": "Healthy" if raw > 0.5 else "Grasserie"}
     return results
 
 
