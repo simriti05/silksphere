@@ -99,17 +99,38 @@ export default function AIDiagnostics() {
       if (!res.ok) throw new Error(`Backend status ${res.status}`)
       const data = await res.json()
       setBackendOnline(true)
-      const r = { result: data.class_name === 'Healthy' ? 'Healthy' : 'Grasserie', confidence: Math.round((data.confidence ?? 0.9) * 100) }
+      const infected = data.counts?.['Grasserie'] || 0
+      const healthy = data.counts?.['Healthy'] || 0
+      const total = data.total || (infected + healthy)
+      const maxConf = data.detections?.length > 0
+        ? Math.max(...data.detections.map(d => d.confidence))
+        : 0.95
+      const r = {
+        detections: data.detections || [],
+        counts: data.counts || {},
+        total: total,
+        annotatedImage: data.annotated_image || null,
+        result: data.result || (infected > 0 ? 'Grasserie' : 'Healthy'),
+        confidence: data.confidence || Math.round(maxConf * 100),
+      }
       setResult(r)
-      addToast(`AI Scan: ${r.result} (${r.confidence}% confidence)`, r.result === 'Healthy' ? 'success' : 'warning')
+      addToast(
+        `AI Scan: ${r.total} worms — ${healthy} Healthy, ${infected} Grasserie`,
+        infected > 0 ? 'warning' : 'success'
+      )
     } catch (err) {
       console.warn('Real AI prediction failed, using fallback:', err)
       await new Promise(r => setTimeout(r, 1200))
-      const isHealthy = Math.random() > 0.4
-      const conf = Math.floor(88 + Math.random() * 11)
-      const r = { result: isHealthy ? 'Healthy' : 'Grasserie', confidence: conf }
+      const r = {
+        detections: [],
+        counts: { Healthy: 12, Grasserie: 3 },
+        total: 15,
+        annotatedImage: null,
+        result: 'Grasserie',
+        confidence: 94,
+      }
       setResult(r)
-      addToast(`AI Scan (demo): ${r.result} (${conf}%)`, isHealthy ? 'success' : 'warning')
+      addToast('AI Scan (demo): 15 worms — 12 Healthy, 3 Grasserie', 'warning')
     } finally {
       setScanning(false)
     }
@@ -117,7 +138,7 @@ export default function AIDiagnostics() {
 
   const reset = () => { setCaptured(null); setCapturedBlob(null); setResult(null); stopCamera() }
 
-  const isInfected = result?.result === 'Grasserie'
+  const isInfected = (result?.counts?.['Grasserie'] || 0) > 0
   const activeBatch = batches.find(b => b.id === selectedBatch) || batches[0]
 
   const card = { background:"white", borderRadius:10, border:"1px solid #e2e8f0", boxShadow:"0 1px 2px rgba(0,0,0,0.04)" }
@@ -224,10 +245,14 @@ export default function AIDiagnostics() {
               </>
             )}
 
-            {/* Uploaded image */}
+            {/* Uploaded image — show annotated version if available */}
             {captured && (
               <>
-                <img src={captured} alt="captured" style={{ width:"100%",height:"100%",objectFit:"cover" }}/>
+                <img
+                  src={result?.annotatedImage ? `data:image/png;base64,${result.annotatedImage}` : captured}
+                  alt="captured"
+                  style={{ width:"100%",height:"100%",objectFit:"cover" }}
+                />
                 {scanning && (
                   <div style={{ position:"absolute",inset:0,background:"rgba(0,0,0,0.5)",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",gap:10 }}>
                     <div style={{ width:36,height:36,border:"3px solid rgba(34,197,94,0.3)",borderTop:"3px solid #22c55e",borderRadius:"50%",animation:"spin 0.8s linear infinite" }}/>
@@ -275,9 +300,9 @@ export default function AIDiagnostics() {
           {/* Worm stats row */}
           <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", borderTop:"1px solid #f1f5f9", paddingTop:8 }}>
             {[
-              { dot:"#22c55e", label:"Healthy", pct: result ? "—" : "—", count:"" },
-              { dot:"#f59e0b", label:"Suspected", pct:"—", count:"" },
-              { dot:"#ef4444", label:"Infected", pct:"—", count:"" },
+              { dot:"#22c55e", label:"Healthy", pct: result ? `${result.counts?.['Healthy'] || 0}` : "—", count: result?.total ? `(${Math.round(((result.counts?.['Healthy'] || 0)/result.total)*100)}%)` : "" },
+              { dot:"#f59e0b", label:"Suspected", pct: result ? "0" : "—", count:"" },
+              { dot:"#ef4444", label:"Infected", pct: result ? `${result.counts?.['Grasserie'] || 0}` : "—", count: result?.total ? `(${Math.round(((result.counts?.['Grasserie'] || 0)/result.total)*100)}%)` : "" },
             ].map(({dot,label,pct,count})=>(
               <div key={label} style={{ display:"flex", alignItems:"center", gap:5 }}>
                 <div style={{ width:7,height:7,borderRadius:"50%",background:dot }}/>
@@ -289,7 +314,7 @@ export default function AIDiagnostics() {
             ))}
             <div style={{ textAlign:"right" }}>
               <div style={{ fontSize:10.5, color:"#94a3b8" }}>Total Worms</div>
-              <div style={{ fontSize:16, fontWeight:800, color:"#0f172a" }}>—</div>
+              <div style={{ fontSize:16, fontWeight:800, color:"#0f172a" }}>{result ? result.total : "—"}</div>
             </div>
           </div>
         </div>
@@ -312,45 +337,42 @@ export default function AIDiagnostics() {
             <div style={{ flex:1, display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center", gap:12, padding:"40px 20px" }}>
               <div style={{ width:40,height:40,border:"3px solid rgba(22,163,74,0.2)",borderTop:"3px solid #16a34a",borderRadius:"50%",animation:"spin 0.8s linear infinite" }}/>
               <div style={{ fontSize:13, fontWeight:600, color:"#475569" }}>Analyzing image...</div>
-              <div style={{ fontSize:11.5, color:"#94a3b8" }}>SilkSphere AI v2.4.1 processing</div>
+              <div style={{ fontSize:11.5, color:"#94a3b8" }}>YOLOv8s silkworm detection</div>
             </div>
           )}
 
           {/* Results */}
           {result && !scanning && (
             <>
-              {/* Disease detected banner */}
-              <div style={{ background: result.result === "Healthy" ? "#f0fdf4" : "#fff1f2", border: `1px solid ${result.result === "Healthy" ? "#bbf7d0" : "#fecdd3"}`, borderRadius:9, padding:"12px 14px", display:"flex", justifyContent:"space-between", alignItems:"center", gap:10 }}>
-                <div>
-                  <div style={{ fontSize:10.5, color: result.result === "Healthy" ? "#16a34a" : "#ef4444", fontWeight:600, marginBottom:2 }}>
-                    {result.result === "Healthy" ? "✓ Healthy Batch" : "Detected Disease"}
+              {/* Status banner */}
+              <div style={{ background: isInfected ? "#fff1f2" : "#f0fdf4", border:`1px solid ${isInfected ? "#fecdd3" : "#bbf7d0"}`, borderRadius:9, padding:"12px 14px" }}>
+                <div style={{ fontSize:10.5, color: isInfected ? "#ef4444" : "#16a34a", fontWeight:600, marginBottom:4 }}>
+                  {isInfected ? "⚠ Disease Detected" : "✓ Healthy Batch"}
+                </div>
+                <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center" }}>
+                  <div>
+                    <div style={{ fontSize:22, fontWeight:800, color:"#0f172a" }}>{result.total} Worms</div>
+                    <div style={{ fontSize:11, color:"#64748b", marginTop:2 }}>detected in image</div>
                   </div>
-                  <div style={{ fontSize:20, fontWeight:800, color:"#0f172a" }}>{result.result}</div>
-                  <div style={{ fontSize:10.5, color:"#64748b" }}>
-                    {result.result === "Healthy" ? "No disease detected" : "(Nuclear Polyhedrosis Virus)"}
+                  <div style={{ display:"flex", gap:12 }}>
+                    <div style={{ textAlign:"center" }}>
+                      <div style={{ fontSize:20, fontWeight:800, color:"#16a34a" }}>{result.counts?.['Healthy'] || 0}</div>
+                      <div style={{ fontSize:10, color:"#64748b" }}>Healthy</div>
+                    </div>
+                    <div style={{ textAlign:"center" }}>
+                      <div style={{ fontSize:20, fontWeight:800, color:"#ef4444" }}>{result.counts?.['Grasserie'] || 0}</div>
+                      <div style={{ fontSize:10, color:"#64748b" }}>Grasserie</div>
+                    </div>
                   </div>
                 </div>
-                <div style={{ textAlign:"right" }}>
-                  <div style={{ fontSize:10.5, color:"#64748b", marginBottom:2 }}>Confidence ⓘ</div>
-                  <div style={{ fontSize:22, fontWeight:800, color:"#0f172a" }}>{result.confidence}%</div>
-                </div>
-                <ResponsiveContainer width={80} height={44}>
-                  <BarChart data={CONF_DATA} margin={{ top:0, right:0, left:0, bottom:0 }} barSize={5}>
-                    <Bar dataKey="v" radius={[3,3,0,0]}>
-                      {CONF_DATA.map((entry, i) => (
-                        <Cell key={i} fill={i === CONF_DATA.length - 1 ? (result.result === "Healthy" ? "#16a34a" : "#ef4444") : (result.result === "Healthy" ? "#bbf7d0" : "#fecaca")} />
-                      ))}
-                    </Bar>
-                  </BarChart>
-                </ResponsiveContainer>
               </div>
 
               {/* Stats grid */}
               <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:"8px 16px" }}>
                 {[
-                  ["Infected Worms", result.result === "Healthy" ? "0" : "—", "Scan Status", "Completed", true],
-                  ["Suspected Worms", result.result === "Healthy" ? "0" : "—", "Model Used", "SilkSphere AI v2.4.1", false],
-                  ["Healthy Worms", "—", "Scan Time", timeFullStr, false],
+                  ["Infected Worms", `${result.counts?.['Grasserie'] || 0}`, "Scan Status", "Completed", true],
+                  ["Total Detected", `${result.total}`, "Model Used", "YOLOv8s", false],
+                  ["Healthy Worms", `${result.counts?.['Healthy'] || 0}`, "Scan Time", timeFullStr, false],
                 ].map(([l1,v1,l2,v2,showBadge],i) => (
                   <React.Fragment key={i}>
                     <div>
@@ -360,7 +382,7 @@ export default function AIDiagnostics() {
                     <div>
                       <div style={{ fontSize:11, color:"#94a3b8", marginBottom:2 }}>{l2}</div>
                       {showBadge
-                        ? <span style={{ background:"#dcfce7", color:"#16a34a", border:"1px solid #bbf7d0", fontSize:10.5, fontWeight:700, padding:"2px 9px", borderRadius:6 }}>{v2}</span>
+                        ? <span style={{ background: isInfected ? "#fee2e2" : "#dcfce7", color: isInfected ? "#ef4444" : "#16a34a", border:`1px solid ${isInfected ? "#fecaca" : "#bbf7d0"}`, fontSize:10.5, fontWeight:700, padding:"2px 9px", borderRadius:6 }}>{v2}</span>
                         : <div style={{ fontSize:12, fontWeight:600, color:"#0f172a" }}>{v2}</div>
                       }
                     </div>
@@ -369,7 +391,7 @@ export default function AIDiagnostics() {
               </div>
 
               {/* Recommendation */}
-              {result.result !== "Healthy" && (
+              {isInfected && (
                 <div style={{ background:"#f0fdf4", border:"1px solid #bbf7d0", borderRadius:9, padding:"10px 12px", display:"flex", justifyContent:"space-between", alignItems:"center", gap:10 }}>
                   <div style={{ display:"flex", gap:10, alignItems:"flex-start" }}>
                     <div style={{ width:28,height:28,borderRadius:7,background:"#dcfce7",display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0 }}>
@@ -386,12 +408,12 @@ export default function AIDiagnostics() {
                 </div>
               )}
 
-              {result.result === "Healthy" && (
+              {!isInfected && (
                 <div style={{ background:"#f0fdf4", border:"1px solid #bbf7d0", borderRadius:9, padding:"10px 12px", display:"flex", alignItems:"center", gap:10 }}>
                   <div style={{ width:28,height:28,borderRadius:7,background:"#dcfce7",display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0 }}>
                     <Shield size={13} color="#16a34a"/>
                   </div>
-                  <div style={{ fontSize:11.5, color:"#16a34a", fontWeight:600 }}>Batch looks healthy. Continue regular monitoring.</div>
+                  <div style={{ fontSize:11.5, color:"#16a34a", fontWeight:600 }}>All {result.total} worms look healthy. Continue regular monitoring.</div>
                 </div>
               )}
             </>
