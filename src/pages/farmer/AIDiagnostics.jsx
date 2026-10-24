@@ -26,11 +26,19 @@ export default function AIDiagnostics() {
   const fileRef = useRef(null)
   const videoRef = useRef(null)
   const canvasRef = useRef(null)
+  const overlayCanvasRef = useRef(null)
+  const liveIntervalRef = useRef(null)
+  const fullscreenContainerRef = useRef(null)
   const [stream, setStream] = useState(null)
   const [cameraOn, setCameraOn] = useState(false)
+  const [liveDetectionOn, setLiveDetectionOn] = useState(false)
+  const [isFullscreen, setIsFullscreen] = useState(false)
+  const [availableCameras, setAvailableCameras] = useState([])
+  const [selectedCamera, setSelectedCamera] = useState('')
   const [captured, setCaptured] = useState(null)
   const [capturedBlob, setCapturedBlob] = useState(null)
   const [result, setResult] = useState(null)
+  const [liveStats, setLiveStats] = useState({ healthy: 0, grasserie: 0, total: 0 })
   const [scanning, setScanning] = useState(false)
   const [backendOnline, setBackendOnline] = useState(null)
   const [selectedBatch, setSelectedBatch] = useState(batches[0]?.id || 'SS-2026-0061')
@@ -47,6 +55,15 @@ export default function AIDiagnostics() {
     fetch(`${BACKEND_URL}/`, { signal: AbortSignal.timeout(2000) })
       .then(() => setBackendOnline(true))
       .catch(() => setBackendOnline(false))
+    
+    // Enumerate available cameras
+    navigator.mediaDevices.enumerateDevices()
+      .then(devices => {
+        const cameras = devices.filter(d => d.kind === 'videoinput')
+        setAvailableCameras(cameras)
+        if (cameras.length > 0) setSelectedCamera(cameras[0].deviceId)
+      })
+      .catch(err => console.warn('Cannot enumerate cameras:', err))
   }, [])
 
   const startCamera = async () => {
@@ -66,10 +83,345 @@ export default function AIDiagnostics() {
     stream?.getTracks().forEach(t => t.stop())
     setStream(null)
     setCameraOn(false)
+    stopLiveDetection()
+  }
+
+  const startLiveDetection = async () => {
+    // Prevent multiple clicks
+    if (liveDetectionOn || cameraOn) {
+      console.log('⚠️ Already starting or running')
+      return
+    }
+    
+    try {
+      const constraints = {
+        video: {
+          deviceId: selectedCamera ? { exact: selectedCamera } : undefined,
+          width: { ideal: 1280 },
+          height: { ideal: 720 },
+          facingMode: 'environment'
+        },
+        audio: false
+      }
+      
+      console.log('🎥 Requesting camera with constraints:', constraints)
+      const s = await navigator.mediaDevices.getUserMedia(constraints)
+      console.log('✅ Camera stream obtained:', s.getVideoTracks()[0].label)
+      
+      setStream(s)
+      setCameraOn(true)
+      setCaptured(null)
+      setResult(null)
+      
+      // Set video source immediately
+      if (videoRef.current) {
+        videoRef.current.srcObject = s
+        console.log('✅ Video element srcObject set')
+      }
+      
+      // Start detection after video is ready
+      setTimeout(() => {
+        console.log('🎬 Activating live detection')
+        setLiveDetectionOn(true)
+      }, 2000)
+      
+    } catch (err) {
+      addToast('Camera error: ' + err.message, 'error')
+      console.error('❌ Camera access error:', err)
+      alert(`Camera Error: ${err.message}\n\nMake sure DroidCam Client is running and click "Start" in the app.`)
+    }
+  }
+
+  const stopLiveDetection = () => {
+    console.log('🛑 Stopping live detection')
+    
+    // Clear the interval
+    if (liveIntervalRef.current) {
+      clearInterval(liveIntervalRef.current)
+      liveIntervalRef.current = null
+    }
+    
+    // Stop the camera stream
+    if (stream) {
+      stream.getTracks().forEach(track => {
+        console.log('Stopping track:', track.label)
+        track.stop()
+      })
+      setStream(null)
+    }
+    
+    // Clear the video element
+    if (videoRef.current) {
+      videoRef.current.srcObject = null
+    }
+    
+    // Reset states
+    setLiveDetectionOn(false)
+    setCameraOn(false)
+    setLiveStats({ healthy: 0, grasserie: 0, total: 0 })
+    
+    // Exit fullscreen if active
+    if (isFullscreen) exitFullscreen()
+    
+    console.log('✅ Live detection stopped completely')
+  }
+
+  const enterFullscreen = () => {
+    const elem = fullscreenContainerRef.current
+    if (!elem) return
+    
+    if (elem.requestFullscreen) {
+      elem.requestFullscreen()
+    } else if (elem.webkitRequestFullscreen) {
+      elem.webkitRequestFullscreen()
+    } else if (elem.msRequestFullscreen) {
+      elem.msRequestFullscreen()
+    }
+    setIsFullscreen(true)
+  }
+
+  const exitFullscreen = () => {
+    if (document.exitFullscreen) {
+      document.exitFullscreen()
+    } else if (document.webkitExitFullscreen) {
+      document.webkitExitFullscreen()
+    } else if (document.msExitFullscreen) {
+      document.msExitFullscreen()
+    }
+    setIsFullscreen(false)
+  }
+
+  useEffect(() => {
+    const handleFullscreenChange = () => {
+      setIsFullscreen(!!document.fullscreenElement)
+    }
+    document.addEventListener('fullscreenchange', handleFullscreenChange)
+    document.addEventListener('webkitfullscreenchange', handleFullscreenChange)
+    return () => {
+      document.removeEventListener('fullscreenchange', handleFullscreenChange)
+      document.removeEventListener('webkitfullscreenchange', handleFullscreenChange)
+    }
+  }, [])
+
+  const processLiveFrame = async () => {
+    const video = videoRef.current
+    const canvas = canvasRef.current
+    const overlayCanvas = overlayCanvasRef.current
+    
+    if (!video || !canvas || !overlayCanvas) {
+      console.log('processLiveFrame check failed:', { video: !!video, canvas: !!canvas, overlayCanvas: !!overlayCanvas })
+      return
+    }
+
+    // Check if video is ready
+    if (video.readyState < 2) {
+      console.log('Video not ready yet, readyState:', video.readyState)
+      return
+    }
+
+    console.log('Processing live frame...', { videoWidth: video.videoWidth, videoHeight: video.videoHeight })
+
+    // Capture frame from video
+    const width = video.videoWidth || 640
+    const height = video.videoHeight || 480
+    canvas.width = width
+    canvas.height = height
+    const ctx = canvas.getContext('2d')
+    ctx.drawImage(video, 0, 0, width, height)
+
+    // Convert to blob and send to backend
+    canvas.toBlob(async (blob) => {
+      if (!blob) return
+      
+      console.log('Sending frame to backend, size:', blob.size)
+      
+      try {
+        const formData = new FormData()
+        formData.append('file', blob, 'frame.jpg')
+        const res = await fetch(`${BACKEND_URL}/predict`, { method: 'POST', body: formData })
+        
+        if (!res.ok) {
+          console.error('Backend response not OK:', res.status)
+          return
+        }
+        
+        const data = await res.json()
+        console.log('Detection result:', data)
+        
+        const detections = data.detections || []
+        const healthy = data.counts?.['Healthy'] || 0
+        const grasserie = data.counts?.['Grasserie'] || 0
+        const total = healthy + grasserie
+
+        // Update live stats
+        setLiveStats({ healthy, grasserie, total })
+
+        // Draw bounding boxes on overlay canvas
+        overlayCanvas.width = width
+        overlayCanvas.height = height
+        const overlayCtx = overlayCanvas.getContext('2d')
+        overlayCtx.clearRect(0, 0, width, height)
+        
+        console.log('Drawing', detections.length, 'bounding boxes')
+        
+        detections.forEach(d => {
+          const [x1, y1, x2, y2] = d.bbox
+          const color = d.class_name === 'Healthy' ? '#22c55e' : '#ef4444'
+          
+          // Draw box
+          overlayCtx.strokeStyle = color
+          overlayCtx.lineWidth = 3
+          overlayCtx.strokeRect(x1, y1, x2 - x1, y2 - y1)
+          
+          // Draw label background
+          const label = `${d.class_name} ${Math.round(d.confidence * 100)}%`
+          overlayCtx.font = 'bold 14px Inter, sans-serif'
+          const textWidth = overlayCtx.measureText(label).width
+          overlayCtx.fillStyle = color
+          overlayCtx.fillRect(x1, Math.max(0, y1 - 22), textWidth + 12, 22)
+          
+          // Draw label text
+          overlayCtx.fillStyle = 'white'
+          overlayCtx.fillText(label, x1 + 6, Math.max(16, y1 - 6))
+        })
+      } catch (err) {
+        console.error('Live detection frame error:', err)
+      }
+    }, 'image/jpeg', 0.9)
   }
 
   useEffect(() => { if (cameraOn && videoRef.current && stream) videoRef.current.srcObject = stream }, [cameraOn, stream])
-  useEffect(() => () => stream?.getTracks().forEach(t => t.stop()), [])
+  
+  // Ensure video has stream when live detection starts
+  useEffect(() => {
+    if (liveDetectionOn && videoRef.current && stream) {
+      console.log('🎬 Live detection activated, ensuring video has stream')
+      videoRef.current.srcObject = stream
+      videoRef.current.play().catch(e => console.warn('Play failed:', e))
+    }
+  }, [liveDetectionOn, stream])
+  
+  // Start/stop live detection interval based on liveDetectionOn state
+  useEffect(() => {
+    if (liveDetectionOn) {
+      console.log('🚀 useEffect: Starting detection loop...')
+      if (liveIntervalRef.current) {
+        clearInterval(liveIntervalRef.current)
+      }
+      
+      const runDetection = () => {
+        const video = videoRef.current
+        const canvas = canvasRef.current
+        const overlayCanvas = overlayCanvasRef.current
+        
+        if (!video || !canvas || !overlayCanvas) {
+          console.log('runDetection check failed:', { video: !!video, canvas: !!canvas, overlayCanvas: !!overlayCanvas })
+          return
+        }
+
+        // Check if video is ready
+        if (video.readyState < 2) {
+          console.log('Video not ready yet, readyState:', video.readyState)
+          return
+        }
+
+        console.log('Processing live frame...', { videoWidth: video.videoWidth, videoHeight: video.videoHeight })
+
+        // Capture frame from video
+        const width = video.videoWidth || 640
+        const height = video.videoHeight || 480
+        canvas.width = width
+        canvas.height = height
+        const ctx = canvas.getContext('2d')
+        ctx.drawImage(video, 0, 0, width, height)
+
+        // Convert to blob and send to backend
+        canvas.toBlob(async (blob) => {
+          if (!blob) return
+          
+          console.log('Sending frame to backend, size:', blob.size)
+          
+          try {
+            const formData = new FormData()
+            formData.append('file', blob, 'frame.jpg')
+            const res = await fetch(`${BACKEND_URL}/predict`, { method: 'POST', body: formData })
+            
+            if (!res.ok) {
+              console.error('Backend response not OK:', res.status)
+              return
+            }
+            
+            const data = await res.json()
+            console.log('Detection result:', data)
+            
+            const detections = data.detections || []
+            const healthy = data.counts?.['Healthy'] || 0
+            const grasserie = data.counts?.['Grasserie'] || 0
+            const total = healthy + grasserie
+
+            // Update live stats
+            setLiveStats({ healthy, grasserie, total })
+
+            // Draw bounding boxes on overlay canvas
+            overlayCanvas.width = width
+            overlayCanvas.height = height
+            const overlayCtx = overlayCanvas.getContext('2d')
+            overlayCtx.clearRect(0, 0, width, height)
+            
+            console.log('Drawing', detections.length, 'bounding boxes')
+            
+            detections.forEach(d => {
+              const [x1, y1, x2, y2] = d.bbox
+              const color = d.class_name === 'Healthy' ? '#22c55e' : '#ef4444'
+              
+              // Draw box
+              overlayCtx.strokeStyle = color
+              overlayCtx.lineWidth = 3
+              overlayCtx.strokeRect(x1, y1, x2 - x1, y2 - y1)
+              
+              // Draw label background
+              const label = `${d.class_name} ${Math.round(d.confidence * 100)}%`
+              overlayCtx.font = 'bold 14px Inter, sans-serif'
+              const textWidth = overlayCtx.measureText(label).width
+              overlayCtx.fillStyle = color
+              overlayCtx.fillRect(x1, Math.max(0, y1 - 22), textWidth + 12, 22)
+              
+              // Draw label text
+              overlayCtx.fillStyle = 'white'
+              overlayCtx.fillText(label, x1 + 6, Math.max(16, y1 - 6))
+            })
+          } catch (err) {
+            console.error('Live detection frame error:', err)
+          }
+        }, 'image/jpeg', 0.9)
+      }
+      
+      liveIntervalRef.current = setInterval(() => {
+        console.log('⏰ Interval tick - calling runDetection')
+        runDetection()
+      }, 500)
+      console.log('✅ Detection interval started:', liveIntervalRef.current)
+    } else {
+      console.log('🛑 useEffect: Stopping detection loop')
+      if (liveIntervalRef.current) {
+        clearInterval(liveIntervalRef.current)
+        liveIntervalRef.current = null
+      }
+    }
+    
+    // Cleanup on unmount or when liveDetectionOn changes
+    return () => {
+      if (liveIntervalRef.current) {
+        clearInterval(liveIntervalRef.current)
+        liveIntervalRef.current = null
+      }
+    }
+  }, [liveDetectionOn])
+  
+  useEffect(() => () => {
+    stream?.getTracks().forEach(t => t.stop())
+    if (liveIntervalRef.current) clearInterval(liveIntervalRef.current)
+  }, [])
 
   const captureFrame = () => {
     const video = videoRef.current, canvas = canvasRef.current
@@ -185,24 +537,112 @@ export default function AIDiagnostics() {
         <div style={{ ...card, padding:"14px 16px", display:"flex", flexDirection:"column", gap:10 }}>
           <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center" }}>
             <div style={{ display:"flex", alignItems:"center", gap:8 }}>
-              <span style={{ fontSize:13, fontWeight:700, color:"#0f172a" }}>Live Tray Scan</span>
-              <div style={{ display:"flex", alignItems:"center", gap:4, background:"#f0fdf4", border:"1px solid #bbf7d0", borderRadius:20, padding:"2px 8px" }}>
-                <div style={{ width:6,height:6,borderRadius:"50%",background:"#16a34a" }}/>
-                <span style={{ fontSize:10.5, color:"#16a34a", fontWeight:600 }}>Live</span>
-              </div>
+              <span style={{ fontSize:13, fontWeight:700, color:"#0f172a" }}>
+                {liveDetectionOn ? "🔴 Live Detection" : "Live Tray Scan"}
+              </span>
+              {liveDetectionOn && (
+                <div style={{ display:"flex", alignItems:"center", gap:4, background:"#fef2f2", border:"1px solid #fecaca", borderRadius:20, padding:"2px 8px" }}>
+                  <div style={{ width:6,height:6,borderRadius:"50%",background:"#ef4444", animation:"pulse 1.5s ease-in-out infinite" }}/>
+                  <span style={{ fontSize:10.5, color:"#ef4444", fontWeight:600 }}>Recording</span>
+                </div>
+              )}
+              {!liveDetectionOn && !cameraOn && !captured && (
+                <div style={{ display:"flex", alignItems:"center", gap:4, background:"#f0fdf4", border:"1px solid #bbf7d0", borderRadius:20, padding:"2px 8px" }}>
+                  <div style={{ width:6,height:6,borderRadius:"50%",background:"#16a34a" }}/>
+                  <span style={{ fontSize:10.5, color:"#16a34a", fontWeight:600 }}>Ready</span>
+                </div>
+              )}
             </div>
-            <button onClick={captured ? reset : startCamera}
-              style={{ display:"flex", alignItems:"center", gap:5, padding:"5px 12px", borderRadius:7, background:"white", border:"1px solid #e2e8f0", fontSize:11.5, fontWeight:600, color:"#475569", cursor:"pointer" }}>
-              <Camera size={12}/> {captured ? "New Scan" : "Capture New"}
-            </button>
+            <div style={{ display:"flex", gap:6 }}>
+              {liveDetectionOn && (
+                <>
+                  <button onClick={isFullscreen ? exitFullscreen : enterFullscreen}
+                    style={{ padding:"5px 12px", borderRadius:7, background:"white", color:"#475569", border:"1px solid #e2e8f0", fontSize:11.5, fontWeight:600, cursor:"pointer", display:"flex", alignItems:"center", gap:5 }}>
+                    {isFullscreen ? "⤓ Exit Fullscreen" : "⛶ Fullscreen"}
+                  </button>
+                  <button onClick={stopLiveDetection}
+                    style={{ padding:"5px 12px", borderRadius:7, background:"#ef4444", color:"white", border:"none", fontSize:11.5, fontWeight:600, cursor:"pointer", display:"flex", alignItems:"center", gap:5 }}>
+                    ⬛ Stop Live
+                  </button>
+                </>
+              )}
+              {!liveDetectionOn && (
+                <>
+                  {availableCameras.length > 1 && (
+                    <select value={selectedCamera} onChange={(e) => setSelectedCamera(e.target.value)}
+                      style={{ padding:"5px 10px", borderRadius:7, border:"1px solid #e2e8f0", background:"white", fontSize:11.5, fontWeight:600, color:"#475569", cursor:"pointer" }}>
+                      {availableCameras.map(cam => (
+                        <option key={cam.deviceId} value={cam.deviceId}>
+                          {cam.label || `Camera ${availableCameras.indexOf(cam) + 1}`}
+                        </option>
+                      ))}
+                    </select>
+                  )}
+                  <button onClick={captured ? reset : startLiveDetection}
+                    style={{ padding:"5px 12px", borderRadius:7, background: captured ? "white" : "#16a34a", color: captured ? "#475569" : "white", border: captured ? "1px solid #e2e8f0" : "none", fontSize:11.5, fontWeight:600, cursor:"pointer", display:"flex", alignItems:"center", gap:5 }}>
+                    {captured ? "New Scan" : "Start Live Detection"}
+                  </button>
+                </>
+              )}
+            </div>
           </div>
 
           {/* Image area */}
-          <div style={{ position:"relative", borderRadius:10, overflow:"hidden", height:220, background:"#1a2e1a", cursor:"pointer" }}
-            onClick={() => !cameraOn && !captured && startCamera()}>
+          <div ref={fullscreenContainerRef} style={{ position:"relative", borderRadius:10, overflow:"hidden", height: isFullscreen ? "100vh" : 220, background:"#1a2e1a", cursor: liveDetectionOn ? "default" : "pointer" }}
+            onClick={() => !cameraOn && !captured && !liveDetectionOn && startCamera()}>
+
+            {/* Live Detection Mode */}
+            {liveDetectionOn && (
+              <div style={{ position:"relative", width:"100%", height:"100%", background:"#000" }}>
+                <video 
+                  key="live-detection-video"
+                  ref={videoRef} 
+                  autoPlay 
+                  playsInline 
+                  muted
+                  style={{ width:"100%", height:"100%", objectFit:"contain", display:"block", background:"#000" }}
+                />
+                <canvas ref={overlayCanvasRef} style={{ position:"absolute", top:0, left:0, width:"100%", height:"100%", pointerEvents:"none" }}/>
+                
+                {/* Live stats overlay */}
+                <div style={{ position:"absolute", top: isFullscreen ? 24 : 8, left: isFullscreen ? 24 : 8, background:"rgba(0,0,0,0.85)", color:"white", padding: isFullscreen ? "16px 24px" : "8px 12px", borderRadius: isFullscreen ? 12 : 8, backdropFilter:"blur(8px)", border:"1px solid rgba(255,255,255,0.1)" }}>
+                  <div style={{ fontSize: isFullscreen ? 13 : 10, color:"#94a3b8", marginBottom: isFullscreen ? 8 : 4, fontWeight:600, letterSpacing:1 }}>LIVE COUNT</div>
+                  <div style={{ display:"flex", gap: isFullscreen ? 24 : 12, fontSize: isFullscreen ? 32 : 18, fontWeight:800 }}>
+                    <span style={{ color:"#22c55e" }}>🟢 {liveStats.healthy}</span>
+                    <span style={{ color:"#ef4444" }}>🔴 {liveStats.grasserie}</span>
+                  </div>
+                  <div style={{ fontSize: isFullscreen ? 15 : 11, color:"#94a3b8", marginTop: isFullscreen ? 8 : 2, fontWeight:500 }}>Total: {liveStats.total} worms detected</div>
+                </div>
+
+                {/* Recording indicator */}
+                <div style={{ position:"absolute", bottom: isFullscreen ? 24 : 8, left: isFullscreen ? 24 : 8, background:"rgba(239,68,68,0.95)", color:"white", fontSize: isFullscreen ? 14 : 11, padding: isFullscreen ? "8px 16px" : "4px 10px", borderRadius: isFullscreen ? 8 : 6, fontWeight:700, display:"flex", alignItems:"center", gap: isFullscreen ? 8 : 6, border:"1px solid rgba(255,255,255,0.2)" }}>
+                  <div style={{ width: isFullscreen ? 10 : 8, height: isFullscreen ? 10 : 8, borderRadius:"50%", background:"white", animation:"pulse 1.5s ease-in-out infinite" }}/>
+                  LIVE DETECTION
+                </div>
+
+                {/* Timestamp */}
+                <div style={{ position:"absolute", bottom: isFullscreen ? 24 : 8, right: isFullscreen ? 24 : 8, background:"rgba(0,0,0,0.75)", color:"white", fontSize: isFullscreen ? 13 : 10, padding: isFullscreen ? "8px 14px" : "3px 8px", borderRadius: isFullscreen ? 8 : 5, fontWeight:600, border:"1px solid rgba(255,255,255,0.1)" }}>
+                  {timeFullStr}
+                </div>
+
+                {/* Fullscreen controls overlay */}
+                {isFullscreen && (
+                  <div style={{ position:"absolute", top:24, right:24, display:"flex", gap:12 }}>
+                    <button onClick={exitFullscreen}
+                      style={{ padding:"10px 20px", borderRadius:8, background:"rgba(255,255,255,0.15)", color:"white", border:"1px solid rgba(255,255,255,0.3)", fontSize:14, fontWeight:600, cursor:"pointer", backdropFilter:"blur(8px)", display:"flex", alignItems:"center", gap:8 }}>
+                      ⤓ Exit Fullscreen
+                    </button>
+                    <button onClick={stopLiveDetection}
+                      style={{ padding:"10px 20px", borderRadius:8, background:"rgba(239,68,68,0.9)", color:"white", border:"1px solid rgba(255,255,255,0.2)", fontSize:14, fontWeight:600, cursor:"pointer", display:"flex", alignItems:"center", gap:8 }}>
+                      ⬛ Stop
+                    </button>
+                  </div>
+                )}
+              </div>
+            )}
 
             {/* Default silkworm image with detection boxes */}
-            {!cameraOn && !captured && (
+            {!cameraOn && !captured && !liveDetectionOn && (
               <>
                 <img src="/images/silkworm-detection.jpg" alt="Silkworm tray"
                   style={{ width:"100%", height:"100%", objectFit:"cover", display:"block" }}/>
@@ -235,12 +675,12 @@ export default function AIDiagnostics() {
               </>
             )}
 
-            {/* Camera live */}
-            {cameraOn && (
+            {/* Camera live (for manual capture mode only, not live detection) */}
+            {cameraOn && !liveDetectionOn && (
               <>
                 <video ref={videoRef} autoPlay playsInline muted style={{ width:"100%",height:"100%",objectFit:"cover" }}/>
                 <div style={{ position:"absolute",bottom:8,left:"50%",transform:"translateX(-50%)",background:"rgba(0,0,0,0.6)",color:"#22c55e",fontSize:10.5,padding:"3px 10px",borderRadius:20,fontWeight:600 }}>
-                  📷 Live · Position silkworm in frame
+                  Live · Position silkworm in frame
                 </div>
               </>
             )}
@@ -266,22 +706,16 @@ export default function AIDiagnostics() {
 
           {/* Action buttons row */}
           <div style={{ display:"flex", gap:8 }}>
-            {!cameraOn && !captured && (
+            {!liveDetectionOn && !captured && (
               <>
-                <button onClick={startCamera}
-                  style={{ flex:1, padding:"7px", borderRadius:7, background:"#16a34a", color:"white", border:"none", fontSize:11.5, fontWeight:600, cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", gap:5 }}>
-                  <Camera size={12}/> Capture
+                <button onClick={startLiveDetection}
+                  style={{ flex:2, padding:"10px", borderRadius:7, background:"#16a34a", color:"white", border:"none", fontSize:13, fontWeight:700, cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", gap:6, boxShadow:"0 2px 8px rgba(22,163,74,0.3)" }}>
+                  Start Live Detection
                 </button>
                 <button onClick={()=>fileRef.current?.click()}
                   style={{ flex:1, padding:"7px", borderRadius:7, background:"white", color:"#475569", border:"1px solid #e2e8f0", fontSize:11.5, fontWeight:600, cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", gap:5 }}>
-                  <Upload size={12}/> Upload Image
+                  <Upload size={12}/> Upload
                 </button>
-              </>
-            )}
-            {cameraOn && (
-              <>
-                <button onClick={captureFrame} style={{ flex:1, padding:"7px", borderRadius:7, background:"#16a34a", color:"white", border:"none", fontSize:11.5, fontWeight:600, cursor:"pointer" }}>Capture &amp; Analyze</button>
-                <button onClick={stopCamera} style={{ flex:1, padding:"7px", borderRadius:7, background:"white", color:"#475569", border:"1px solid #e2e8f0", fontSize:11.5, fontWeight:600, cursor:"pointer" }}>Cancel</button>
               </>
             )}
             {captured && !scanning && (
@@ -300,9 +734,9 @@ export default function AIDiagnostics() {
           {/* Worm stats row */}
           <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", borderTop:"1px solid #f1f5f9", paddingTop:8 }}>
             {[
-              { dot:"#22c55e", label:"Healthy", pct: result ? `${result.counts?.['Healthy'] || 0}` : "—", count: result?.total ? `(${Math.round(((result.counts?.['Healthy'] || 0)/result.total)*100)}%)` : "" },
-              { dot:"#f59e0b", label:"Suspected", pct: result ? "0" : "—", count:"" },
-              { dot:"#ef4444", label:"Infected", pct: result ? `${result.counts?.['Grasserie'] || 0}` : "—", count: result?.total ? `(${Math.round(((result.counts?.['Grasserie'] || 0)/result.total)*100)}%)` : "" },
+              { dot:"#22c55e", label:"Healthy", pct: liveDetectionOn ? `${liveStats.healthy}` : (result ? `${result.counts?.['Healthy'] || 0}` : "—"), count: liveDetectionOn ? `(${liveStats.total > 0 ? Math.round((liveStats.healthy/liveStats.total)*100) : 0}%)` : (result?.total ? `(${Math.round(((result.counts?.['Healthy'] || 0)/result.total)*100)}%)` : "") },
+              { dot:"#f59e0b", label:"Suspected", pct: "—", count:"" },
+              { dot:"#ef4444", label:"Infected", pct: liveDetectionOn ? `${liveStats.grasserie}` : (result ? `${result.counts?.['Grasserie'] || 0}` : "—"), count: liveDetectionOn ? `(${liveStats.total > 0 ? Math.round((liveStats.grasserie/liveStats.total)*100) : 0}%)` : (result?.total ? `(${Math.round(((result.counts?.['Grasserie'] || 0)/result.total)*100)}%)` : "") },
             ].map(({dot,label,pct,count})=>(
               <div key={label} style={{ display:"flex", alignItems:"center", gap:5 }}>
                 <div style={{ width:7,height:7,borderRadius:"50%",background:dot }}/>
@@ -314,7 +748,7 @@ export default function AIDiagnostics() {
             ))}
             <div style={{ textAlign:"right" }}>
               <div style={{ fontSize:10.5, color:"#94a3b8" }}>Total Worms</div>
-              <div style={{ fontSize:16, fontWeight:800, color:"#0f172a" }}>{result ? result.total : "—"}</div>
+              <div style={{ fontSize:16, fontWeight:800, color:"#0f172a" }}>{liveDetectionOn ? liveStats.total : (result ? result.total : "—")}</div>
             </div>
           </div>
         </div>

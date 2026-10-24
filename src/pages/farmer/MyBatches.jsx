@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react'
 import { useApp } from '../../context/AppContext'
 import { Plus, X, Award, Bell, Calendar, ChevronRight, ChevronLeft, Search, SlidersHorizontal, FileText } from 'lucide-react'
+import BatchTraceability from './BatchTraceability'
 
 const INSTAR_STAGES = ['Egg','Instar 1','Instar 2','Instar 3','Instar 4','Instar 5','Spinning','Cocoon']
 
@@ -151,15 +152,28 @@ function NewBatchModal({ onClose }) {
 const NEXT_ACTIONS = ["Feeding","Cleaning","AI Scan","Harvest","Spinning","Monitoring"]
 const ACTION_TIMES = [7200, 12000, 4500, 176400, 86400, 3600]
 
-export default function MyBatches() {
+export default function MyBatches({ setPage }) {
   const { batches } = useApp()
+  const [selectedBatch, setSelectedBatch] = useState(null)
   const [gradeTarget, setGradeTarget] = useState(null)
   const [showNew, setShowNew] = useState(false)
   const [search, setSearch] = useState('')
   const [statusFilter, setStatusFilter] = useState('All')
   const [instarFilter, setInstarFilter] = useState('All')
-  const [page, setPage] = useState(1)
+  const [page, setPageNum] = useState(1)
   const PER_PAGE = 6
+
+  if (selectedBatch) {
+    return (
+      <BatchTraceability
+        batch={selectedBatch}
+        onBack={() => setSelectedBatch(null)}
+        onViewEnvHistory={() => {
+          if (setPage) setPage('env-history')
+        }}
+      />
+    )
+  }
 
   const now = new Date()
   const dateStr = now.toLocaleDateString("en-GB",{day:"2-digit",month:"short",year:"numeric"})
@@ -218,18 +232,15 @@ export default function MyBatches() {
       {/* KPI row */}
       <div style={{ display:"grid", gridTemplateColumns:"repeat(4,1fr)", gap:10 }}>
         {[
-          { icon:"🗂️", label:"Total Batches", value:total, sub:"All time", iconBg:"#dcfce7" },
-          { icon:"▶️", label:"Active Batches", value:active, sub:"Running", iconBg:"#dbeafe" },
-          { icon:"✅", label:"Completed", value:completed, sub:"Finished", iconBg:"#f3e8ff" },
-          { icon:"🏷️", label:"Total Quantity", value:`${totalQty} kg`, sub:"Across all batches", iconBg:"#fff7ed" },
-        ].map(({icon,label,value,sub,iconBg})=>(
-          <div key={label} style={{ ...card, padding:"12px 16px", display:"flex", alignItems:"center", gap:12 }}>
-            <div style={{ width:38,height:38,borderRadius:9,background:iconBg,display:"flex",alignItems:"center",justifyContent:"center",fontSize:18,flexShrink:0 }}>{icon}</div>
-            <div>
-              <div style={{ fontSize:11,color:"#64748b",marginBottom:2 }}>{label}</div>
-              <div style={{ fontSize:22,fontWeight:800,color:"#0f172a",lineHeight:1 }}>{value}</div>
-              <div style={{ fontSize:10.5,color:"#94a3b8",marginTop:1 }}>{sub}</div>
-            </div>
+          { label:"Total Batches", value:total, sub:"All time", iconBg:"#dcfce7" },
+          { label:"Active Batches", value:active, sub:"Running", iconBg:"#dbeafe" },
+          { label:"Completed", value:completed, sub:"Finished", iconBg:"#f3e8ff" },
+          { label:"Total Quantity", value:`${totalQty} kg`, sub:"Across all batches", iconBg:"#fff7ed" },
+        ].map(({label,value,sub,iconBg})=>(
+          <div key={label} style={{ ...card, padding:"12px 16px" }}>
+            <div style={{ fontSize:11,color:"#64748b",marginBottom:2 }}>{label}</div>
+            <div style={{ fontSize:22,fontWeight:800,color:"#0f172a",lineHeight:1 }}>{value}</div>
+            <div style={{ fontSize:10.5,color:"#94a3b8",marginTop:1 }}>{sub}</div>
           </div>
         ))}
       </div>
@@ -277,7 +288,9 @@ export default function MyBatches() {
           const isCompleted = b.status === 'listed'
 
           return (
-            <div key={b.id} style={{
+            <div key={b.id}
+            onClick={() => setSelectedBatch(b)}
+            style={{
               display:"grid", gridTemplateColumns:"2fr 1fr 1.2fr 0.8fr 1.3fr 0.8fr 0.3fr",
               padding:"14px 16px", borderBottom:"1px solid #f1f5f9", alignItems:"center",
               borderLeft:`3px solid ${leftBorder(b.status)}`,
@@ -344,7 +357,6 @@ export default function MyBatches() {
                   <div>
                     <div style={{ fontSize:13, fontWeight:700, color:"#16a34a" }}>{actionLabel}</div>
                     <div style={{ display:"flex", alignItems:"center", gap:4, marginTop:2 }}>
-                      <span style={{ fontSize:10.5, color:"#94a3b8" }}>⏱</span>
                       <span style={{ fontSize:11.5, fontWeight:600, color:"#475569", fontFamily:"monospace" }}>
                         <Countdown target={actionTime}/>
                       </span>

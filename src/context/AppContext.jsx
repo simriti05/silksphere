@@ -105,7 +105,13 @@ const AppContext = createContext(null)
 
 export function AppProvider({ children }) {
   const [user, setUser] = useState(null)
-  const [liveSensor, setLiveSensor] = useState(generateSensor())
+  const [liveSensor, setLiveSensor] = useState({
+    temperature: null,
+    humidity: null,
+    co2: null,
+    nodeStatus: 'Connecting...',
+    isReal: false
+  })
   const sensor = liveSensor
 
   const [batches, setBatches] = useState(MOCK_BATCHES)
@@ -133,39 +139,62 @@ export function AppProvider({ children }) {
   // =========================================================================
   const fetchRealSensorData = useCallback(async () => {
     try {
-      // Fetch from the new endpoint on port 5000
-      const res = await fetch('http://localhost:5000/sensor-data/latest')
+      const res = await fetch(`${BACKEND_URL}/sensor-data/latest`)
       if (res.ok) {
         const data = await res.json()
-        
-        // Update local state with real sensor data
-        setLiveSensor({
-          temperature: data.temperature || 25.0,
-          humidity: data.humidity || 78.0,
-          co2: data.co2 || 900,
-          nodeStatus: data.nodeStatus || 'Online',
-          timestamp: data.timestamp || Date.now(),
-          zones: data.zones || null
-        })
-        
-        // Also update Firestore for other features to work
-        try {
-          await setDoc(doc(db, 'sensor_data', 'latest'), {
-            temperature: data.temperature,
-            humidity: data.humidity,
-            co2: data.co2,
-            nodeStatus: data.nodeStatus,
-            timestamp: Date.now(),
-            zones: data.zones
-          })
-        } catch (firebaseErr) {
-          console.warn("Firebase write skipped:", firebaseErr.message)
+
+        // If backend explicitly marked as real hardware or has valid readings:
+        if (data.nodeStatus && data.nodeStatus.includes('Offline')) {
+          setLiveSensor(prev => ({
+            ...prev,
+            nodeStatus: 'Offline - Waiting for Arduino',
+            isReal: false
+          }))
+          return
         }
+
+        // Update state with actual sensor data
+        setLiveSensor({
+          temperature: data.temperature ?? null,
+          humidity: data.humidity ?? null,
+          co2: data.co2 ?? null,
+          light: data.light ?? null,
+          nodeStatus: data.nodeStatus || 'Online',
+          timestamp: Date.now(),
+          zones: data.zones || null,
+          isReal: true
+        })
+
+        // Also update Firestore for other components if data is real
+        if (data.temperature != null) {
+          try {
+            await setDoc(doc(db, 'sensor_data', 'latest'), {
+              temperature: data.temperature,
+              humidity: data.humidity,
+              co2: data.co2,
+              light: data.light,
+              nodeStatus: data.nodeStatus,
+              timestamp: Date.now(),
+              zones: data.zones
+            })
+          } catch (firebaseErr) {
+            console.warn("Firebase write skipped:", firebaseErr.message)
+          }
+        }
+      } else {
+        setLiveSensor(prev => ({
+          ...prev,
+          nodeStatus: 'Offline - Backend unreachable',
+          isReal: false
+        }))
       }
     } catch (err) {
-      console.warn("Error fetching real sensor data, using fallback:", err.message)
-      // Fallback to generated data if ESP32 is offline
-      setLiveSensor(generateSensor())
+      // Backend not running - set status to offline instead of generating fake numbers
+      setLiveSensor(prev => ({
+        ...prev,
+        nodeStatus: 'Offline - Backend not running',
+        isReal: false
+      }))
     }
   }, [])
 
@@ -179,10 +208,18 @@ export function AppProvider({ children }) {
   }, [fetchRealSensorData])
 
   // Subscribe to live sensor data from Firestore
+  // Only apply Firestore update if it's fresh (within last 10s) AND no recent ESP32 fetch
+  // This prevents Firestore from overwriting live ESP32 data with stale values
   useEffect(() => {
     const unsub = onSnapshot(doc(db, 'sensor_data', 'latest'), (docSnap) => {
       if (docSnap.exists()) {
-        setLiveSensor(docSnap.data())
+        const fsData = docSnap.data()
+        const fsTimestamp = fsData.timestamp || 0
+        const ageMs = Date.now() - fsTimestamp
+        // Only use Firestore data if it's recent (< 10s old), meaning it came from a real ESP32 push
+        if (ageMs < 10000) {
+          setLiveSensor(fsData)
+        }
       }
     }, (err) => {
       console.warn("Firestore sensor_data/latest listener failed:", err.message)

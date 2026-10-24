@@ -1,0 +1,173 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Camera Test - DroidCam</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 20px;
+            font-family: Arial, sans-serif;
+            background: #1a1a1a;
+            color: white;
+        }
+        #video {
+            width: 100%;
+            max-width: 800px;
+            background: #000;
+            border: 2px solid #22c55e;
+        }
+        button {
+            padding: 12px 24px;
+            font-size: 16px;
+            background: #16a34a;
+            color: white;
+            border: none;
+            border-radius: 8px;
+            cursor: pointer;
+            margin: 10px 5px;
+        }
+        button:hover { background: #15803d; }
+        select {
+            padding: 10px;
+            font-size: 14px;
+            margin: 10px 5px;
+            border-radius: 6px;
+        }
+        .info {
+            margin: 15px 0;
+            padding: 15px;
+            background: rgba(34,197,94,0.1);
+            border: 1px solid #22c55e;
+            border-radius: 8px;
+        }
+        .error {
+            background: rgba(239,68,68,0.1);
+            border-color: #ef4444;
+            color: #ef4444;
+        }
+    </style>
+</head>
+<body>
+    <h1>🎥 DroidCam Test Page</h1>
+    
+    <div class="info">
+        <strong>Instructions:</strong><br>
+        1. Make sure DroidCam Client is running on your laptop<br>
+        2. Click "Start" in DroidCam Client (should show "Connected")<br>
+        3. Select camera from dropdown below<br>
+        4. Click "Start Camera"<br>
+        5. You should see your phone's camera feed
+    </div>
+    
+    <div>
+        <select id="cameraSelect">
+            <option value="">Loading cameras...</option>
+        </select>
+        <button onclick="startCamera()">Start Camera</button>
+        <button onclick="stopCamera()">Stop Camera</button>
+    </div>
+    
+    <div id="status" class="info" style="margin-top: 10px;"></div>
+    
+    <video id="video" autoplay playsinline></video>
+
+    <script>
+        const video = document.getElementById('video');
+        const cameraSelect = document.getElementById('cameraSelect');
+        const statusDiv = document.getElementById('status');
+        let stream = null;
+
+        // List all available cameras
+        async function listCameras() {
+            try {
+                // Request permission first
+                await navigator.mediaDevices.getUserMedia({ video: true });
+                
+                const devices = await navigator.mediaDevices.enumerateDevices();
+                const cameras = devices.filter(d => d.kind === 'videoinput');
+                
+                console.log('Found cameras:', cameras);
+                
+                cameraSelect.innerHTML = '';
+                cameras.forEach((camera, index) => {
+                    const option = document.createElement('option');
+                    option.value = camera.deviceId;
+                    option.text = camera.label || `Camera ${index + 1}`;
+                    cameraSelect.appendChild(option);
+                    
+                    console.log(`Camera ${index + 1}:`, camera.label, '(ID:', camera.deviceId + ')');
+                });
+                
+                if (cameras.length === 0) {
+                    statusDiv.className = 'info error';
+                    statusDiv.innerHTML = '❌ No cameras found! Make sure DroidCam Client is running.';
+                } else {
+                    statusDiv.className = 'info';
+                    statusDiv.innerHTML = `✅ Found ${cameras.length} camera(s). ${cameras.some(c => c.label.includes('DroidCam')) ? '<strong>DroidCam detected!</strong>' : 'If you don\'t see DroidCam, make sure the Client app is running.'}`;
+                }
+            } catch (err) {
+                console.error('Error listing cameras:', err);
+                statusDiv.className = 'info error';
+                statusDiv.innerHTML = `❌ Error: ${err.message}`;
+            }
+        }
+
+        async function startCamera() {
+            const selectedCamera = cameraSelect.value;
+            
+            if (!selectedCamera) {
+                alert('Please select a camera first!');
+                return;
+            }
+            
+            try {
+                statusDiv.className = 'info';
+                statusDiv.innerHTML = '⏳ Starting camera...';
+                
+                const constraints = {
+                    video: {
+                        deviceId: { exact: selectedCamera },
+                        width: { ideal: 1280 },
+                        height: { ideal: 720 }
+                    },
+                    audio: false
+                };
+                
+                console.log('Requesting camera with constraints:', constraints);
+                
+                stream = await navigator.mediaDevices.getUserMedia(constraints);
+                
+                console.log('Stream obtained:', stream);
+                console.log('Video track:', stream.getVideoTracks()[0]);
+                
+                video.srcObject = stream;
+                
+                video.onloadedmetadata = () => {
+                    console.log('Video metadata loaded');
+                    video.play();
+                    statusDiv.className = 'info';
+                    statusDiv.innerHTML = `✅ Camera started! Using: <strong>${stream.getVideoTracks()[0].label}</strong>`;
+                };
+                
+            } catch (err) {
+                console.error('Camera error:', err);
+                statusDiv.className = 'info error';
+                statusDiv.innerHTML = `❌ Camera Error: ${err.message}<br><br>Make sure DroidCam Client is running and click "Start" in the app.`;
+            }
+        }
+
+        function stopCamera() {
+            if (stream) {
+                stream.getTracks().forEach(track => track.stop());
+                video.srcObject = null;
+                stream = null;
+                statusDiv.className = 'info';
+                statusDiv.innerHTML = '⬛ Camera stopped.';
+            }
+        }
+
+        // List cameras on page load
+        listCameras();
+    </script>
+</body>
+</html>

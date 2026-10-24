@@ -8,7 +8,6 @@ const FARMER_NAV = [
   { id: 'batches', label: 'My Batches', icon: Package },
   { id: 'diagnostics', label: 'AI Diagnostics', icon: Microscope },
   { id: 'lifecycle', label: 'Life Cycle', icon: Leaf },
-  { id: 'environment', label: 'Environment', icon: Activity },
   { id: 'analytics', label: 'Analytics', icon: BarChart2 },
   { id: 'marketplace', label: 'Marketplace', icon: ShoppingBag },
   { id: 'wallet', label: 'Wallet', icon: Wallet },

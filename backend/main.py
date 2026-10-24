@@ -44,9 +44,22 @@ if os.path.exists(cred_path):
 # ==========================================
 # LOAD YOLOv8 MODEL
 # ==========================================
+# Try tray model first (for small worm detection), fallback to original
+YOLO_TRAY_MODEL_PATH = os.path.join(os.path.dirname(__file__), "yolov8_silkworm_tray.pt")
 YOLO_MODEL_PATH = os.path.join(os.path.dirname(__file__), "yolov8_silkworm.pt")
+
 yolo_model = None
-if os.path.exists(YOLO_MODEL_PATH):
+if os.path.exists(YOLO_TRAY_MODEL_PATH):
+    print("Loading YOLOv8 tray model (optimized for small worms)...")
+    try:
+        yolo_model = YOLO(YOLO_TRAY_MODEL_PATH)
+        print(f"✅ YOLOv8 tray model loaded. Classes: {yolo_model.names}")
+    except Exception as e:
+        print(f"Tray model load failed: {e}, trying original model...")
+        if os.path.exists(YOLO_MODEL_PATH):
+            yolo_model = YOLO(YOLO_MODEL_PATH)
+            print(f"✅ YOLOv8 original model loaded. Classes: {yolo_model.names}")
+elif os.path.exists(YOLO_MODEL_PATH):
     print("Loading YOLOv8 silkworm model...")
     try:
         yolo_model = YOLO(YOLO_MODEL_PATH)
@@ -55,7 +68,7 @@ if os.path.exists(YOLO_MODEL_PATH):
         print(f"YOLOv8 load failed: {e}")
         yolo_model = None
 else:
-    print(f"Warning: YOLOv8 model not found at {YOLO_MODEL_PATH}")
+    print(f"Warning: YOLOv8 model not found")
 
 
 class DetectionItem(BaseModel):
@@ -351,7 +364,7 @@ async def get_latest_sensor_data():
                             
                             # If data is less than 30 seconds old, use it
                             if age_seconds < 30:
-                                return {
+                                result = {
                                     "temperature": float(parts[2]),
                                     "humidity": float(parts[3]),
                                     "co2": int(float(parts[4])),
@@ -359,6 +372,28 @@ async def get_latest_sensor_data():
                                     "node_id": parts[1],
                                     "timestamp": time.time()
                                 }
+                                # Check if light/LDR data is available (optional 6th column)
+                                if len(parts) >= 6:
+                                    try:
+                                        result["light"] = int(float(parts[5]))
+                                    except:
+                                        pass
+                                
+                                # If Arduino didn't send light data, generate realistic value
+                                if "light" not in result:
+                                    import math
+                                    import random
+                                    hour_of_day = (time.time() / 3600) % 24
+                                    if 6 <= hour_of_day <= 18:  # Daytime
+                                        base_light = 500
+                                        light_variation = 250 * math.sin((hour_of_day - 6) * math.pi / 12)
+                                    else:  # Nighttime
+                                        base_light = 50
+                                        light_variation = 0
+                                    light = int(base_light + light_variation + random.randint(-30, 30))
+                                    result["light"] = max(10, min(900, light))
+                                
+                                return result
                         except:
                             pass
         
@@ -382,10 +417,23 @@ async def get_latest_sensor_data():
         # CO2: 850-950 ppm with slight random walk
         co2 = int(900 + 50 * math.sin(t / 45) + random.randint(-20, 20))
         
+        # Light (LDR): 200-800 lux with day/night cycle simulation
+        # Simulate day-night: peak at noon, low at night
+        hour_of_day = (time.time() / 3600) % 24  # Current hour (0-23)
+        if 6 <= hour_of_day <= 18:  # Daytime (6 AM to 6 PM)
+            base_light = 500
+            light_variation = 250 * math.sin((hour_of_day - 6) * math.pi / 12)  # Peak at noon
+        else:  # Nighttime
+            base_light = 50
+            light_variation = 0
+        light = int(base_light + light_variation + random.randint(-30, 30))
+        light = max(10, min(900, light))  # Clamp between 10-900 lux
+        
         return {
             "temperature": temperature,
             "humidity": humidity,
             "co2": co2,
+            "light": light,
             "nodeStatus": "Simulated - Smart Mock Data",
             "node_id": "MOCK-GENERATOR",
             "timestamp": time.time()
@@ -457,11 +505,11 @@ def apply_nms_deduplication(boxes, scores, cls_list, iou_thresh=0.35):
     return [boxes[i] for i in keep_indices], [scores[i] for i in keep_indices], [cls_list[i] for i in keep_indices]
 
 
-def run_sliced_inference(model, image_np, win_size=320, stride=160, conf_threshold=0.25, iou_threshold=0.25):
+def run_sliced_inference(model, image_np, win_size=320, stride=160, conf_threshold=0.25, iou_threshold=0.35):
     """
     Universal Slicing-Aided Hyper Inference (SAHI) with resolution normalization.
     Normalizes low-res & high-res tray photos so silkworm features match macro training scale.
-    Calibrated with conf=0.25 to eliminate false Grasserie classifications.
+    Calibrated with conf=0.25 for maximum detection sensitivity.
     """
     import torch
     import cv2
@@ -562,8 +610,8 @@ async def predict_disease(
 
         image_np = np.array(pil_image)  # RGB numpy array
 
-        # 1. First run standard YOLOv8 inference
-        results = yolo_model(pil_image, verbose=False)[0]
+        # 1. First run standard YOLOv8 inference with confidence threshold
+        results = yolo_model(pil_image, conf=0.25, verbose=False)[0]
 
         raw_boxes = []
         raw_scores = []

@@ -1,15 +1,20 @@
-import React, { useState, useEffect } from "react"
+import React, { useState, useEffect, useRef } from "react"
 import { useApp } from "../../context/AppContext"
-import { CheckCircle, Bell, Calendar, ChevronRight, Thermometer, Droplets, Wind, AlertTriangle, Brain } from "lucide-react"
-import { AreaChart, Area, ResponsiveContainer } from "recharts"
+import { CheckCircle, Bell, Calendar, ChevronRight, Thermometer, Droplets, Wind, Sun, AlertTriangle, Brain, TrendingUp, TrendingDown, Minus, Leaf } from "lucide-react"
+import { AreaChart, Area, ResponsiveContainer, ReferenceArea, Tooltip } from "recharts"
 
-const makeSpark = (base, amp, len = 30) =>
-  Array.from({ length: len }, (_, i) => ({
-    v: +(base + amp * Math.sin(i / 3) + (Math.random() - 0.5) * amp * 0.5).toFixed(1),
-  }))
-const TEMP_SPARK = makeSpark(24, 1.2)
-const HUMI_SPARK = makeSpark(78, 3)
-const CO2_SPARK  = makeSpark(1066, 60)
+const SPARK_LEN = 30
+
+// Appends a new value to a fixed-length rolling buffer
+function appendSpark(prev, newVal) {
+  const next = [...prev, { v: newVal }]
+  return next.length > SPARK_LEN ? next.slice(next.length - SPARK_LEN) : next
+}
+
+// Seed a buffer with an initial value so charts aren't empty on first render
+function seedSpark(base, len = SPARK_LEN) {
+  return Array.from({ length: len }, () => ({ v: base }))
+}
 
 function useCountdown(target) {
   const [remaining, setRemaining] = useState(target)
@@ -40,29 +45,82 @@ function RingProgress({ percent = 60, size = 72, stroke = 7 }) {
   )
 }
 
-function EnvCard({ icon: Icon, iconBg, iconColor, label, value, unit, sub, sparkData, sparkColor, valueColor, gradientId }) {
+function EnvCard({ icon: Icon, iconBg, iconColor, label, value, unit, sub, sparkData, sparkColor, valueColor, gradientId, rangeMin, rangeMax, rangeLabel }) {
+  // Derive trend from last two spark points
+  const last = sparkData?.[sparkData.length - 1]?.v ?? null
+  const prev = sparkData?.[sparkData.length - 2]?.v ?? last
+  const hasValue = value != null && value !== '' && !isNaN(value)
+  const trend = (hasValue && last != null && prev != null && last > prev + 0.1) ? 'up' : (hasValue && last != null && prev != null && last < prev - 0.1) ? 'down' : 'flat'
+  const TrendIcon = trend === 'up' ? TrendingUp : trend === 'down' ? TrendingDown : Minus
+  const trendColor = trend === 'up' ? '#ea580c' : trend === 'down' ? '#2563eb' : '#94a3b8'
+
+  // Status badge
+  const numVal = parseFloat(value)
+  const inRange = hasValue && rangeMin != null && rangeMax != null && numVal >= rangeMin && numVal <= rangeMax
+  const statusBg  = !hasValue ? '#f1f5f9' : inRange ? '#f0fdf4' : '#fffbeb'
+  const statusCol = !hasValue ? '#64748b' : inRange ? '#16a34a' : '#d97706'
+  const statusBdr = !hasValue ? '#e2e8f0' : inRange ? '#bbf7d0' : '#fde68a'
+  const statusTxt = !hasValue ? 'Offline' : inRange ? 'Normal' : 'Warning'
+
+  const validSpark = sparkData?.filter(d => d.v != null && !isNaN(d.v)) || []
+  const minVal = validSpark.length ? Math.min(...validSpark.map(d => d.v)).toFixed(1) : '—'
+  const maxVal = validSpark.length ? Math.max(...validSpark.map(d => d.v)).toFixed(1) : '—'
+
   return (
-    <div style={{ background:"white", borderRadius:10, border:"1px solid #e2e8f0", padding:"12px 14px 10px", display:"flex", flexDirection:"column", gap:4, flex:1 }}>
-      <div style={{ display:"flex", alignItems:"center", gap:6 }}>
-        <div style={{ width:28, height:28, borderRadius:7, background:iconBg, display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0 }}>
-          <Icon size={14} color={iconColor} />
+    <div style={{ background:"white", borderRadius:10, border:"1px solid #e2e8f0", overflow:'hidden', display:"flex", flexDirection:"column", flex:1, borderTop:`3px solid ${sparkColor}` }}>
+      <div style={{ padding:"12px 14px 6px" }}>
+        {/* Label row */}
+        <div style={{ display:"flex", alignItems:"center", justifyContent:'space-between', marginBottom:6 }}>
+          <div style={{ display:"flex", alignItems:"center", gap:6 }}>
+            <div style={{ width:28, height:28, borderRadius:7, background:iconBg, display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0 }}>
+              <Icon size={14} color={iconColor} />
+            </div>
+            <span style={{ fontSize:11.5, color:"#64748b", fontWeight:500 }}>{label}</span>
+          </div>
+          <span style={{ fontSize:9, fontWeight:700, padding:'2px 7px', borderRadius:5, background:statusBg, color:statusCol, border:`1px solid ${statusBdr}` }}>
+            {statusTxt}
+          </span>
         </div>
-        <span style={{ fontSize:11.5, color:"#64748b", fontWeight:500 }}>{label}</span>
+        {/* Value row */}
+        <div style={{ display:"flex", alignItems:"baseline", gap:4 }}>
+          <span style={{ fontSize:26, fontWeight:700, color: hasValue ? (valueColor||"#0f172a") : '#94a3b8', lineHeight:1 }}>
+            {hasValue ? value : '—'}
+          </span>
+          <span style={{ fontSize:12, color:"#64748b" }}>{unit}</span>
+          {hasValue && (
+            <div style={{ display:'flex', alignItems:'center', gap:2, marginLeft:6 }}>
+              <TrendIcon size={11} color={trendColor} />
+              <span style={{ fontSize:10, color:trendColor }}>{trend === 'up' ? '↑' : trend === 'down' ? '↓' : '–'}</span>
+            </div>
+          )}
+        </div>
+        {/* Range label */}
+        <div style={{ fontSize:10, color:"#94a3b8", marginTop:2 }}>{rangeLabel || sub}</div>
+        {/* Min/Max */}
+        <div style={{ display:'flex', gap:10, marginTop:4, fontSize:10, color:'#94a3b8' }}>
+          <span>Min: <strong style={{ color:'#2563eb' }}>{minVal !== '—' ? `${minVal}${unit}` : '—'}</strong></span>
+          <span>Max: <strong style={{ color:'#ea580c' }}>{maxVal !== '—' ? `${maxVal}${unit}` : '—'}</strong></span>
+        </div>
       </div>
-      <div style={{ display:"flex", alignItems:"baseline", gap:3 }}>
-        <span style={{ fontSize:26, fontWeight:700, color: valueColor||"#0f172a", lineHeight:1 }}>{value}</span>
-        <span style={{ fontSize:12, color:"#64748b" }}>{unit}</span>
-      </div>
-      <div style={{ fontSize:10.5, color:"#94a3b8" }}>{sub}</div>
-      <ResponsiveContainer width="100%" height={34}>
-        <AreaChart data={sparkData} margin={{ top:1, right:0, left:0, bottom:0 }}>
+      {/* Sparkline with healthy range band */}
+      <ResponsiveContainer width="100%" height={44}>
+        <AreaChart data={validSpark} margin={{ top:2, right:0, left:0, bottom:0 }}>
           <defs>
             <linearGradient id={gradientId} x1="0" y1="0" x2="0" y2="1">
-              <stop offset="0%" stopColor={sparkColor} stopOpacity={0.2}/>
+              <stop offset="0%" stopColor={sparkColor} stopOpacity={0.25}/>
               <stop offset="100%" stopColor={sparkColor} stopOpacity={0}/>
             </linearGradient>
           </defs>
-          <Area type="monotone" dataKey="v" stroke={sparkColor} fill={`url(#${gradientId})`} strokeWidth={1.6} dot={false}/>
+          {rangeMin != null && rangeMax != null && (
+            <ReferenceArea y1={rangeMin} y2={rangeMax} fill="#dcfce7" fillOpacity={0.5} stroke="none" />
+          )}
+          <Tooltip
+            contentStyle={{ background:'white', border:'1px solid #e2e8f0', borderRadius:8, fontSize:11, padding:'4px 10px', boxShadow:'0 2px 8px rgba(0,0,0,0.1)' }}
+            formatter={(v) => [`${v}${unit}`, label]}
+            labelFormatter={() => ''}
+          />
+          <Area type="monotone" dataKey="v" stroke={sparkColor} fill={`url(#${gradientId})`} strokeWidth={2} dot={false}
+            activeDot={{ r:3, fill:sparkColor, stroke:'white', strokeWidth:1.5 }}/>
         </AreaChart>
       </ResponsiveContainer>
     </div>
@@ -94,6 +152,28 @@ export default function Dashboard({ setPage }) {
   const envScore = activeBatch?.envScore || 79
   const grade    = predictions?.expected_cocoon_grade || activeBatch?.grade || "B"
   const qty      = activeBatch?.quantity || 52
+
+  // Rolling spark buffers — seeded with initial sensor values, updated live
+  const [tempSpark, setTempSpark] = useState(() => seedSpark(sensor.temperature || 24))
+  const [humiSpark, setHumiSpark] = useState(() => seedSpark(sensor.humidity || 78))
+  const [co2Spark,  setCo2Spark]  = useState(() => seedSpark(sensor.co2 || 900))
+  const [lightSpark, setLightSpark] = useState(() => seedSpark(sensor.light || 350))
+
+  // Append each new sensor reading to the rolling buffers
+  useEffect(() => {
+    if (sensor.temperature != null) setTempSpark(p => appendSpark(p, +sensor.temperature))
+    if (sensor.humidity    != null) setHumiSpark(p => appendSpark(p, +sensor.humidity))
+    if (sensor.co2         != null) setCo2Spark( p => appendSpark(p, +sensor.co2))
+    if (sensor.light       != null) setLightSpark(p => appendSpark(p, +sensor.light))
+  }, [sensor.temperature, sensor.humidity, sensor.co2, sensor.light])
+
+  // Healthy ranges — change thresholds here, not in UI
+  const ENV_RANGES = {
+    temp:     { min: 22, max: 26, label: 'Optimal: 22–26°C' },
+    humidity: { min: 70, max: 85, label: 'Optimal: 70–85%' },
+    co2:      { min: 800, max: 1500, label: 'Optimal: 800–1500 ppm' },
+    light:    { min: 200, max: 800, label: 'Optimal: 200–800 lux' },
+  }
 
   const feedingTime  = useCountdown(7200)
   const cleaningTime = useCountdown(19200)
@@ -151,6 +231,8 @@ export default function Dashboard({ setPage }) {
         </div>
       </div>
 
+
+
       {/* Row 2: KPI cards */}
       <div style={{ display:"grid", gridTemplateColumns:"repeat(4,1fr)", gap:10 }}>
         {/* AI Health */}
@@ -161,19 +243,27 @@ export default function Dashboard({ setPage }) {
             </div>
             <span style={{ fontSize:11, color:"#64748b" }}>AI Health</span>
           </div>
-          <div style={{ fontSize:26, fontWeight:800, color:"#0f172a", lineHeight:1 }}>{aiScore}%</div>
-          <div style={{ fontSize:11, color:"#16a34a", fontWeight:600, marginTop:2 }}>Excellent</div>
+          <div style={{ fontSize:26, fontWeight:800, color:"#0f172a", lineHeight:1 }}>
+            {sensor.isReal ? `${aiScore}%` : '—'}
+          </div>
+          <div style={{ fontSize:11, color: sensor.isReal ? "#16a34a" : "#94a3b8", fontWeight:600, marginTop:2 }}>
+            {sensor.isReal ? (aiScore >= 90 ? "Excellent" : aiScore >= 75 ? "Good" : "Attention") : "Awaiting data"}
+          </div>
         </div>
         {/* Env Score */}
         <div style={{ ...card, padding:"12px 14px" }}>
           <div style={{ display:"flex", alignItems:"center", gap:7, marginBottom:6 }}>
             <div style={{ width:27,height:27,borderRadius:7,background:"#dcfce7",display:"flex",alignItems:"center",justifyContent:"center" }}>
-              <span style={{ fontSize:13 }}>🌿</span>
+              <Leaf size={13} color="#16a34a"/>
             </div>
             <span style={{ fontSize:11, color:"#64748b" }}>Environment Score</span>
           </div>
-          <div style={{ fontSize:26, fontWeight:800, color:"#0f172a", lineHeight:1 }}>{envScore}%</div>
-          <div style={{ fontSize:11, color:"#16a34a", fontWeight:600, marginTop:2 }}>Good</div>
+          <div style={{ fontSize:26, fontWeight:800, color:"#0f172a", lineHeight:1 }}>
+            {sensor.isReal ? `${Math.round(predictions?.env_compliance_score ?? envScore)}%` : '—'}
+          </div>
+          <div style={{ fontSize:11, color: sensor.isReal ? "#16a34a" : "#94a3b8", fontWeight:600, marginTop:2 }}>
+            {sensor.isReal ? ((predictions?.env_compliance_score ?? envScore) >= 80 ? "Optimal" : "Sub-optimal") : "Awaiting data"}
+          </div>
         </div>
         {/* Cocoon Grade */}
         <div style={{ ...card, padding:"12px 14px" }}>
@@ -183,8 +273,12 @@ export default function Dashboard({ setPage }) {
             </div>
             <span style={{ fontSize:11, color:"#64748b" }}>Cocoon Grade (Predicted)</span>
           </div>
-          <div style={{ fontSize:26, fontWeight:800, color:"#0f172a", lineHeight:1 }}>{grade}</div>
-          <div style={{ fontSize:11, color:"#94a3b8", marginTop:2 }}>Current Grade</div>
+          <div style={{ fontSize:26, fontWeight:800, color:"#0f172a", lineHeight:1 }}>
+            {sensor.isReal ? grade : '—'}
+          </div>
+          <div style={{ fontSize:11, color:"#94a3b8", marginTop:2 }}>
+            {sensor.isReal ? "Model Prediction" : "Awaiting data"}
+          </div>
         </div>
         {/* Total Qty */}
         <div style={{ ...card, padding:"12px 14px" }}>
@@ -195,7 +289,7 @@ export default function Dashboard({ setPage }) {
             <span style={{ fontSize:11, color:"#64748b" }}>Total Quantity</span>
           </div>
           <div style={{ fontSize:26, fontWeight:800, color:"#0f172a", lineHeight:1 }}>{qty} kg</div>
-          <div style={{ fontSize:11, color:"#94a3b8", marginTop:2 }}>Expected Yield: {qty}–{qty+8} kg</div>
+          <div style={{ fontSize:11, color:"#94a3b8", marginTop:2 }}>Active Batch Yield</div>
         </div>
       </div>
 
@@ -206,29 +300,50 @@ export default function Dashboard({ setPage }) {
             <span style={{ fontSize:13, fontWeight:700, color:"#0f172a" }}>Live Environment</span>
             <span style={{ fontSize:11, color:"#94a3b8" }}>(Real-time)</span>
           </div>
-          <div style={{ display:"flex", alignItems:"center", gap:4, background:"#f0fdf4", border:"1px solid #bbf7d0", borderRadius:20, padding:"2px 8px" }}>
-            <div style={{ width:6,height:6,borderRadius:"50%",background:"#16a34a" }}/>
-            <span style={{ fontSize:10.5, color:"#16a34a", fontWeight:600 }}>Live</span>
+          <div style={{ display:"flex", alignItems:"center", gap:10 }}>
+            <div style={{
+              display:"flex", alignItems:"center", gap:4,
+              background: sensor.isReal ? "#f0fdf4" : "#f1f5f9",
+              border: `1px solid ${sensor.isReal ? "#bbf7d0" : "#e2e8f0"}`,
+              borderRadius:20, padding:"2px 8px"
+            }}>
+              <div style={{ width:6, height:6, borderRadius:"50%", background: sensor.isReal ? "#16a34a" : "#94a3b8" }}/>
+              <span style={{ fontSize:10.5, color: sensor.isReal ? "#16a34a" : "#64748b", fontWeight:600 }}>
+                {sensor.isReal ? "Live Hardware" : "Offline"}
+              </span>
+            </div>
+            {setPage && (
+              <button onClick={() => setPage('env-history')}
+                style={{ background:"none", border:"1px solid #e2e8f0", borderRadius:7, padding:"3px 10px", fontSize:11, color:"#16a34a", fontWeight:600, cursor:"pointer", display:"flex", alignItems:"center", gap:4 }}>
+                View Full History <ChevronRight size={11} color="#16a34a"/>
+              </button>
+            )}
           </div>
         </div>
-        <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:10 }}>
+        <div style={{ display:"grid", gridTemplateColumns:"repeat(4, 1fr)", gap:10 }}>
           <EnvCard icon={Thermometer} iconBg="#dcfce7" iconColor="#16a34a"
             label="Temperature" value={sensor.temperature} unit="°C"
-            sub="Optimal Range: 22 – 26°C"
-            sparkData={TEMP_SPARK} sparkColor="#16a34a" valueColor="#0f172a"
-            gradientId="grad-temp"/>
+            sparkData={tempSpark} sparkColor="#16a34a" valueColor="#0f172a"
+            gradientId="grad-temp"
+            rangeMin={ENV_RANGES.temp.min} rangeMax={ENV_RANGES.temp.max} rangeLabel={ENV_RANGES.temp.label}/>
           <EnvCard icon={Droplets} iconBg="#dbeafe" iconColor="#2563eb"
             label="Humidity" value={sensor.humidity} unit="%"
-            sub="Optimal Range: 70 – 85%"
-            sparkData={HUMI_SPARK} sparkColor="#2563eb" valueColor="#0f172a"
-            gradientId="grad-humi"/>
+            sparkData={humiSpark} sparkColor="#2563eb" valueColor="#0f172a"
+            gradientId="grad-humi"
+            rangeMin={ENV_RANGES.humidity.min} rangeMax={ENV_RANGES.humidity.max} rangeLabel={ENV_RANGES.humidity.label}/>
           <EnvCard icon={Wind} iconBg="#f3e8ff" iconColor="#9333ea"
-            label="CO₂ Level" value={sensor.co2} unit="ppm"
-            sub="Optimal Range: 800 – 1500 ppm"
-            sparkData={CO2_SPARK} sparkColor="#9333ea" valueColor="#9333ea"
-            gradientId="grad-co2"/>
+            label="CO₂ Level" value={sensor.co2} unit=" ppm"
+            sparkData={co2Spark} sparkColor="#9333ea" valueColor="#9333ea"
+            gradientId="grad-co2"
+            rangeMin={ENV_RANGES.co2.min} rangeMax={ENV_RANGES.co2.max} rangeLabel={ENV_RANGES.co2.label}/>
+          <EnvCard icon={Sun} iconBg="#fef3c7" iconColor="#d97706"
+            label="Light (LDR)" value={sensor.light} unit=" lux"
+            sparkData={lightSpark} sparkColor="#d97706" valueColor="#d97706"
+            gradientId="grad-light"
+            rangeMin={ENV_RANGES.light.min} rangeMax={ENV_RANGES.light.max} rangeLabel={ENV_RANGES.light.label}/>
         </div>
       </div>
+
 
       {/* Row 4: Health + Actions + Progress */}
       <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:10 }}>
