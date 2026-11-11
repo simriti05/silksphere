@@ -14,6 +14,7 @@ from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
 from ultralytics import YOLO
+import tensorflow as tf
 
 # ==========================================
 # LAYER 3 & 5 SECURITY: API Backend
@@ -69,6 +70,66 @@ elif os.path.exists(YOLO_MODEL_PATH):
         yolo_model = None
 else:
     print(f"Warning: YOLOv8 model not found")
+
+# ==========================================
+# LOAD KERAS CLASSIFIER (secondary model)
+# ==========================================
+# MobileNetV2-based binary classifier:
+#   Input : 224x224x3 RGB, normalised to [0,1]
+#   Output: sigmoid scalar  — < 0.5 → Healthy, >= 0.5 → Grasserie
+KERAS_MODEL_PATH = os.path.join(os.path.dirname(__file__), "silkworm_disease_model.keras")
+keras_model = None
+if os.path.exists(KERAS_MODEL_PATH):
+    try:
+        keras_model = tf.keras.models.load_model(KERAS_MODEL_PATH)
+        print(f"✅ Keras classifier loaded. Input: {keras_model.input_shape}, Output: {keras_model.output_shape}")
+    except Exception as e:
+        print(f"⚠️  Keras model load failed: {e}")
+else:
+    print("Warning: Keras model not found at", KERAS_MODEL_PATH)
+
+
+def classify_crop(image_np_rgb: np.ndarray, x1: int, y1: int, x2: int, y2: int):
+    """
+    Runs the Keras MobileNetV2 classifier on a single worm crop.
+
+    Returns (class_name, keras_confidence) where:
+      class_name        — 'Healthy' or 'Grasserie'
+      keras_confidence  — float in [0, 1], confidence for the returned class
+
+    If the crop is too small or the model is not loaded, returns (None, None)
+    so the caller can keep the original YOLO result unchanged.
+    """
+    if keras_model is None:
+        return None, None
+
+    # Guard: ignore crops that are too tiny to be meaningful
+    h = y2 - y1
+    w = x2 - x1
+    if h < 8 or w < 8:
+        return None, None
+
+    # Clamp to image bounds
+    img_h, img_w = image_np_rgb.shape[:2]
+    x1c, y1c = max(0, x1), max(0, y1)
+    x2c, y2c = min(img_w, x2), min(img_h, y2)
+
+    crop = image_np_rgb[y1c:y2c, x1c:x2c]  # RGB crop
+
+    # Resize to 224x224 (model input size) using high-quality interpolation
+    crop_resized = cv2.resize(crop, (224, 224), interpolation=cv2.INTER_CUBIC)
+
+    # Normalise to [0, 1] and add batch dimension
+    crop_norm = crop_resized.astype(np.float32) / 255.0
+    batch = np.expand_dims(crop_norm, axis=0)  # (1, 224, 224, 3)
+
+    # Inference
+    prob = float(keras_model.predict(batch, verbose=0)[0][0])  # sigmoid output
+
+    if prob >= 0.5:
+        return "Grasserie", round(prob, 4)
+    else:
+        return "Healthy", round(1.0 - prob, 4)
 
 
 class DetectionItem(BaseModel):
@@ -479,13 +540,15 @@ async def set_motor_control(request: Request):
 
 @app.get("/debug")
 def debug_predict():
-    """Returns model info."""
-    if yolo_model is None:
-        return {"error": "YOLOv8 model not loaded"}
+    """Returns model info for both YOLO and Keras models."""
     return {
-        "model": "YOLOv8s",
-        "classes": yolo_model.names,
-        "model_loaded": True
+        "yolo_model_loaded": yolo_model is not None,
+        "yolo_classes": yolo_model.names if yolo_model else None,
+        "keras_model_loaded": keras_model is not None,
+        "keras_input_shape": str(keras_model.input_shape) if keras_model else None,
+        "keras_output_shape": str(keras_model.output_shape) if keras_model else None,
+        "pipeline": "two-stage (YOLO detect → Keras classify)" if keras_model else "single-stage (YOLO only)",
+        "fusion_weights": {"yolo": 0.4, "keras": 0.6} if keras_model else None,
     }
 
 
@@ -565,18 +628,39 @@ def run_sliced_inference(model, image_np, win_size=320, stride=160, conf_thresho
     annotated_bgr = cv2.cvtColor(image_np, cv2.COLOR_RGB2BGR)
 
     for box, score, cls_idx in zip(final_boxes, final_scores, final_cls):
-        cls_name = model.names[cls_idx]
+        yolo_cls_name = model.names[cls_idx]
         x1, y1, x2, y2 = [int(v) for v in box]
+
+        # ── Two-stage refinement: Keras classifier on each worm crop ──
+        keras_cls, keras_conf = classify_crop(image_np, x1, y1, x2, y2)
+
+        if keras_cls is None:
+            final_cls_name = yolo_cls_name
+            final_score = round(float(score), 4)
+        elif keras_cls == yolo_cls_name:
+            final_cls_name = yolo_cls_name
+            final_score = round(0.4 * float(score) + 0.6 * keras_conf, 4)
+        else:
+            yolo_score_grasserie = float(score) if yolo_cls_name == "Grasserie" else (1.0 - float(score))
+            keras_score_grasserie = keras_conf if keras_cls == "Grasserie" else (1.0 - keras_conf)
+            fused = 0.4 * yolo_score_grasserie + 0.6 * keras_score_grasserie
+            if fused >= 0.5:
+                final_cls_name = "Grasserie"
+                final_score = round(fused, 4)
+            else:
+                final_cls_name = "Healthy"
+                final_score = round(1.0 - fused, 4)
+
         detections.append({
-            "class_name": cls_name,
-            "confidence": round(float(score), 4),
+            "class_name": final_cls_name,
+            "confidence": final_score,
             "bbox": [x1, y1, x2, y2]
         })
-        counts[cls_name] = counts.get(cls_name, 0) + 1
+        counts[final_cls_name] = counts.get(final_cls_name, 0) + 1
 
-        color = (0, 0, 255) if cls_name == "Grasserie" else (0, 255, 0)
+        color = (0, 0, 255) if final_cls_name == "Grasserie" else (0, 255, 0)
         cv2.rectangle(annotated_bgr, (x1, y1), (x2, y2), color, 2)
-        label = f"{cls_name} {int(score * 100)}%"
+        label = f"{final_cls_name} {int(final_score * 100)}%"
         cv2.putText(annotated_bgr, label, (x1, max(15, y1 - 5)), cv2.FONT_HERSHEY_SIMPLEX, 0.45, color, 1)
 
     annotated_rgb = cv2.cvtColor(annotated_bgr, cv2.COLOR_BGR2RGB)
@@ -628,14 +712,49 @@ async def predict_disease(
         detections = []
         counts = {}
         for box, conf, cls_idx in zip(clean_boxes, clean_scores, clean_cls):
-            cls_name = yolo_model.names[cls_idx]
+            yolo_cls_name = yolo_model.names[cls_idx]
             x1, y1, x2, y2 = box
+
+            # ── Two-stage refinement: run Keras classifier on each worm crop ──
+            keras_cls, keras_conf = classify_crop(
+                image_np, round(x1), round(y1), round(x2), round(y2)
+            )
+
+            if keras_cls is None:
+                # Keras skipped (crop too small or model not loaded) — keep YOLO as-is
+                final_cls = yolo_cls_name
+                final_conf = conf
+                source = "yolo"
+            elif keras_cls == yolo_cls_name:
+                # Both models agree — fuse confidences for a boosted score
+                # Weighted average: YOLO 40% + Keras 60%
+                final_cls = yolo_cls_name
+                final_conf = round(0.4 * conf + 0.6 * keras_conf, 4)
+                source = "agree"
+            else:
+                # Models disagree — weighted vote decides the winner
+                # Keras gets higher weight (purpose-trained classifier vs detector)
+                yolo_weight = 0.4
+                keras_weight = 0.6
+                yolo_score_grasserie = conf if yolo_cls_name == "Grasserie" else (1.0 - conf)
+                keras_score_grasserie = keras_conf if keras_cls == "Grasserie" else (1.0 - keras_conf)
+                fused_grasserie = yolo_weight * yolo_score_grasserie + keras_weight * keras_score_grasserie
+                if fused_grasserie >= 0.5:
+                    final_cls = "Grasserie"
+                    final_conf = round(fused_grasserie, 4)
+                else:
+                    final_cls = "Healthy"
+                    final_conf = round(1.0 - fused_grasserie, 4)
+                source = "disagree"
+
+            print(f"[DETECT] YOLO={yolo_cls_name}({conf:.2f}) Keras={keras_cls}({keras_conf}) → {final_cls}({final_conf:.2f}) [{source}]")
+
             detections.append({
-                "class_name": cls_name,
-                "confidence": round(conf, 4),
+                "class_name": final_cls,
+                "confidence": final_conf,
                 "bbox": [round(x1), round(y1), round(x2), round(y2)]
             })
-            counts[cls_name] = counts.get(cls_name, 0) + 1
+            counts[final_cls] = counts.get(final_cls, 0) + 1
 
         # Render clean annotated image for standard inference
         annotated_np = cv2.cvtColor(image_np, cv2.COLOR_RGB2BGR)

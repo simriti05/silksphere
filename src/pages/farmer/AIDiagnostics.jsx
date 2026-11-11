@@ -266,23 +266,76 @@ export default function AIDiagnostics() {
         
         detections.forEach(d => {
           const [x1, y1, x2, y2] = d.bbox
-          const color = d.class_name === 'Healthy' ? '#22c55e' : '#ef4444'
-          
-          // Draw box
+          const isInfectedWorm = d.class_name !== 'Healthy'
+          const color      = isInfectedWorm ? '#ef4444' : '#22c55e'
+          const colorRgb   = isInfectedWorm ? '239,68,68' : '34,197,94'
+
+          const cx = (x1 + x2) / 2
+          const cy = (y1 + y2) / 2
+          const rx = (x2 - x1) / 2
+          const ry = (y2 - y1) / 2
+
+          // 1. Soft glow halo
+          overlayCtx.save()
+          overlayCtx.shadowColor = color
+          overlayCtx.shadowBlur  = 18
+          overlayCtx.strokeStyle = `rgba(${colorRgb},0.9)`
+          overlayCtx.lineWidth   = 2.5
+          overlayCtx.beginPath()
+          overlayCtx.ellipse(cx, cy, rx, ry, 0, 0, Math.PI * 2)
+          overlayCtx.stroke()
+          overlayCtx.restore()
+
+          // 2. Semi-transparent filled ellipse (the "mask" region)
+          overlayCtx.save()
+          overlayCtx.globalAlpha = 0.28
+          overlayCtx.fillStyle   = color
+          overlayCtx.beginPath()
+          overlayCtx.ellipse(cx, cy, rx, ry, 0, 0, Math.PI * 2)
+          overlayCtx.fill()
+          overlayCtx.restore()
+
+          // 3. Crisp outline on top
+          overlayCtx.save()
           overlayCtx.strokeStyle = color
-          overlayCtx.lineWidth = 3
-          overlayCtx.strokeRect(x1, y1, x2 - x1, y2 - y1)
-          
-          // Draw label background
-          const label = `${d.class_name} ${Math.round(d.confidence * 100)}%`
-          overlayCtx.font = 'bold 14px Inter, sans-serif'
-          const textWidth = overlayCtx.measureText(label).width
-          overlayCtx.fillStyle = color
-          overlayCtx.fillRect(x1, Math.max(0, y1 - 22), textWidth + 12, 22)
-          
-          // Draw label text
+          overlayCtx.lineWidth   = 2
+          overlayCtx.beginPath()
+          overlayCtx.ellipse(cx, cy, rx, ry, 0, 0, Math.PI * 2)
+          overlayCtx.stroke()
+          overlayCtx.restore()
+
+          // 4. Confidence badge (centered pill above each worm)
+          const label      = `${d.class_name} ${Math.round(d.confidence * 100)}%`
+          overlayCtx.font  = 'bold 13px Inter, sans-serif'
+          const tw         = overlayCtx.measureText(label).width
+          const bx         = cx - tw / 2 - 8
+          const by         = Math.max(0, y1 - 26)
+          const bw         = tw + 16
+          const bh         = 22
+          const br         = 6
+
+          overlayCtx.save()
+          overlayCtx.fillStyle   = color
+          overlayCtx.globalAlpha = 0.95
+          overlayCtx.beginPath()
+          overlayCtx.moveTo(bx + br, by)
+          overlayCtx.lineTo(bx + bw - br, by)
+          overlayCtx.arcTo(bx + bw, by, bx + bw, by + bh, br)
+          overlayCtx.lineTo(bx + bw, by + bh - br)
+          overlayCtx.arcTo(bx + bw, by + bh, bx + bw - br, by + bh, br)
+          overlayCtx.lineTo(bx + br, by + bh)
+          overlayCtx.arcTo(bx, by + bh, bx, by + bh - br, br)
+          overlayCtx.lineTo(bx, by + br)
+          overlayCtx.arcTo(bx, by, bx + br, by, br)
+          overlayCtx.closePath()
+          overlayCtx.fill()
+          overlayCtx.restore()
+
+          overlayCtx.save()
           overlayCtx.fillStyle = 'white'
-          overlayCtx.fillText(label, x1 + 6, Math.max(16, y1 - 6))
+          overlayCtx.font      = 'bold 13px Inter, sans-serif'
+          overlayCtx.fillText(label, bx + 8, by + bh - 6)
+          overlayCtx.restore()
         })
       } catch (err) {
         console.error('Live detection frame error:', err)
@@ -646,20 +699,65 @@ export default function AIDiagnostics() {
               <>
                 <img src="/images/silkworm-detection.jpg" alt="Silkworm tray"
                   style={{ width:"100%", height:"100%", objectFit:"cover", display:"block" }}/>
-                {/* Detection bounding boxes overlay */}
+                {/* Segmentation-style ellipse overlay (demo placeholder) */}
                 <svg style={{ position:"absolute", inset:0, width:"100%", height:"100%" }} viewBox="0 0 520 220">
-                  {/* Green boxes - healthy */}
-                  {[[10,10,90,60],[120,5,95,55],[240,5,100,55],[360,5,100,55],[460,5,55,55],
-                    [5,80,85,60],[5,150,80,60],[200,150,90,60],[430,60,80,55],[440,140,75,60]].map(([x,y,w,h],i)=>(
-                    <rect key={`g${i}`} x={x} y={y} width={w} height={h} fill="none" stroke="#22c55e" strokeWidth={1.5} rx={2}/>
+                  <defs>
+                    <filter id="glow-green" x="-40%" y="-40%" width="180%" height="180%">
+                      <feGaussianBlur stdDeviation="3" result="blur"/>
+                      <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+                    </filter>
+                    <filter id="glow-red" x="-40%" y="-40%" width="180%" height="180%">
+                      <feGaussianBlur stdDeviation="3" result="blur"/>
+                      <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+                    </filter>
+                    <filter id="glow-orange" x="-40%" y="-40%" width="180%" height="180%">
+                      <feGaussianBlur stdDeviation="3" result="blur"/>
+                      <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+                    </filter>
+                  </defs>
+
+                  {/* Green ellipses - healthy */}
+                  {[
+                    [55,  40,  45, 30],
+                    [167, 32,  47, 27],
+                    [290, 32,  50, 27],
+                    [410, 32,  50, 27],
+                    [487, 32,  27, 27],
+                    [47,  110, 42, 30],
+                    [45,  180, 40, 30],
+                    [245, 180, 45, 30],
+                    [470, 87,  40, 27],
+                    [477, 170, 37, 30],
+                  ].map(([cx,cy,rx,ry],i) => (
+                    <g key={`g${i}`}>
+                      <ellipse cx={cx} cy={cy} rx={rx} ry={ry} fill="rgba(34,197,94,0.22)" stroke="#22c55e" strokeWidth={1.5} filter="url(#glow-green)"/>
+                      <rect x={cx-18} y={cy-ry-14} width={36} height={13} rx={4} fill="rgba(34,197,94,0.92)"/>
+                      <text x={cx} y={cy-ry-4} textAnchor="middle" fill="white" fontSize={8} fontWeight="bold" fontFamily="Inter,sans-serif">Healthy</text>
+                    </g>
                   ))}
-                  {/* Orange boxes - suspected */}
-                  {[[115,70,100,65],[230,65,110,65]].map(([x,y,w,h],i)=>(
-                    <rect key={`o${i}`} x={x} y={y} width={w} height={h} fill="none" stroke="#f59e0b" strokeWidth={1.5} rx={2}/>
+
+                  {/* Orange ellipses - suspected */}
+                  {[
+                    [165, 102, 50, 32],
+                    [285,  97, 55, 32],
+                  ].map(([cx,cy,rx,ry],i) => (
+                    <g key={`o${i}`}>
+                      <ellipse cx={cx} cy={cy} rx={rx} ry={ry} fill="rgba(245,158,11,0.22)" stroke="#f59e0b" strokeWidth={1.5} filter="url(#glow-orange)"/>
+                      <rect x={cx-22} y={cy-ry-14} width={44} height={13} rx={4} fill="rgba(245,158,11,0.92)"/>
+                      <text x={cx} y={cy-ry-4} textAnchor="middle" fill="white" fontSize={8} fontWeight="bold" fontFamily="Inter,sans-serif">Suspected</text>
+                    </g>
                   ))}
-                  {/* Red boxes - infected */}
-                  {[[160,130,120,70],[340,110,110,70]].map(([x,y,w,h],i)=>(
-                    <rect key={`r${i}`} x={x} y={y} width={w} height={h} fill="none" stroke="#ef4444" strokeWidth={2} rx={2}/>
+
+                  {/* Red ellipses - infected */}
+                  {[
+                    [220, 165, 60, 35],
+                    [395, 145, 55, 35],
+                  ].map(([cx,cy,rx,ry],i) => (
+                    <g key={`r${i}`}>
+                      <ellipse cx={cx} cy={cy} rx={rx} ry={ry} fill="rgba(239,68,68,0.25)" stroke="#ef4444" strokeWidth={2} filter="url(#glow-red)"/>
+                      <rect x={cx-26} y={cy-ry-14} width={52} height={13} rx={4} fill="rgba(239,68,68,0.92)"/>
+                      <text x={cx} y={cy-ry-4} textAnchor="middle" fill="white" fontSize={8} fontWeight="bold" fontFamily="Inter,sans-serif">Grasserie</text>
+                    </g>
                   ))}
                 </svg>
                 {/* Timestamp overlay */}
